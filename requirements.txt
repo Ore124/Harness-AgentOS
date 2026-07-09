@@ -1,0 +1,5 @@
+openai>=1.0.0
+tiktoken>=0.5.0  # optional: improves token counting accuracy, falls back to char estimation
+playwright>=1.40.0  # optional: only needed for app-builder evaluator browser testing
+fastapi>=0.110.0
+uvicorn>=0.27.0

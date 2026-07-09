@@ -1,0 +1,11 @@
+.env
+.idea/
+.harness_memory.json
+__pycache__/
+.pytest_cache/
+workspace/
+*.pyc
+.DS_Store
+jobs/
+venv/
+package-lock.json
