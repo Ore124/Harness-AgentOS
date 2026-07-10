@@ -415,6 +415,6 @@ python -m unittest tests.test_web_server
 - 新增状态驱动能力时，优先通过 `orchestrator` 的 state、scheduler、hook 扩展。
 - 改完后至少运行相关单元测试；涉及 Web/UI 时同时做手动冒烟验证。
 
-## License
+## 致谢
 
-MIT
+感谢 [lazyFrogLOL/Harness_Engineering](https://github.com/lazyFrogLOL/Harness_Engineering.git) 仓库对本项目的启发和参考。
