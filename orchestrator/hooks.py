@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from orchestrator.state import append_event, load_state, save_state
+from orchestrator.state import _store_for_workspace, append_event, load_state, now_iso, save_state
 
 
 class HookManager:
@@ -37,6 +37,10 @@ class HookManager:
     def _record(self, event_type: str, data: dict[str, Any]) -> None:
         try:
             state = load_state(self.state_path)
+            _store_for_workspace(state["workspace"]).append_event(
+                state["run_id"],
+                {"t": now_iso(), "type": event_type, "data": data},
+            )
             append_event(state, event_type, data)
             save_state(self.state_path, state)
         except Exception:

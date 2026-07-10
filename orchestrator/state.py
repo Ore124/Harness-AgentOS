@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from orchestrator.store import OrchestratorStore
+
 STATE_FILE = "harness_state.json"
 STATE_VERSION = 1
 
@@ -74,6 +76,10 @@ def state_path_for_workspace(workspace: str | Path) -> Path:
     return Path(workspace) / STATE_FILE
 
 
+def _store_for_workspace(workspace: str | Path) -> OrchestratorStore:
+    return OrchestratorStore(Path(workspace) / ".harness" / "orchestrator.db")
+
+
 def load_state(path: str | Path) -> dict[str, Any]:
     """Load and validate a state file."""
     state_path = Path(path)
@@ -113,6 +119,7 @@ def save_state(path: str | Path, state: dict[str, Any]) -> None:
         finally:
             if os.path.exists(tmp_name):
                 os.unlink(tmp_name)
+    _store_for_workspace(state_copy["workspace"]).save_state(state_copy)
 
 
 def update_state(path: str | Path, mutator: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
