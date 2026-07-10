@@ -3,19 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
 from orchestrator.path_safety import WorkspacePathError, resolve_workspace_path
-from orchestrator.scheduler import Scheduler, confirm_profile, set_active
+from orchestrator.scheduler import Scheduler, approve_human_action, confirm_profile, set_active
 from orchestrator.state import STATE_FILE, create_run_state, load_state, save_state, state_path_for_workspace
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -26,6 +28,8 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 _workers: dict[str, threading.Thread] = {}
 _worker_lock = threading.Lock()
+_terminal_lock = threading.Lock()
+_terminal_cwds: dict[str, Path] = {}
 
 
 class CreateRunRequest(BaseModel):
@@ -35,6 +39,13 @@ class CreateRunRequest(BaseModel):
 
 class ConfirmProfileRequest(BaseModel):
     profile: str
+
+
+class TerminalRunRequest(BaseModel):
+    command: str
+    session_id: str = "default"
+    run_id: str | None = None
+    timeout: int = 120
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -108,6 +119,13 @@ def resume_run(run_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
     return state
 
 
+@app.post("/api/runs/{run_id}/approve")
+def approve_run(run_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    state = approve_human_action(_state_path(run_id))
+    background_tasks.add_task(start_worker, run_id)
+    return state
+
+
 @app.post("/api/runs/{run_id}/pause")
 def pause_run(run_id: str) -> dict[str, Any]:
     return set_active(_state_path(run_id), False)
@@ -124,6 +142,91 @@ def get_artifact(run_id: str, name: str):
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="artifact not found")
     return FileResponse(str(target))
+
+
+def _require_terminal_access(request: Request) -> None:
+    if not config.WEB_TERMINAL_ENABLED:
+        raise HTTPException(status_code=403, detail="terminal disabled")
+    if config.WEB_TERMINAL_TOKEN:
+        token = request.headers.get("x-harness-token", "")
+        if token != config.WEB_TERMINAL_TOKEN:
+            raise HTTPException(status_code=401, detail="terminal token required")
+
+
+@app.post("/api/terminal/run")
+def run_terminal_command(payload: TerminalRunRequest, request: Request) -> dict[str, Any]:
+    _require_terminal_access(request)
+    command = payload.command.strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="command is required")
+
+    session_id = payload.session_id.strip() or "default"
+    timeout = max(1, min(int(payload.timeout or 120), 600))
+
+    with _terminal_lock:
+        cwd = _terminal_cwds.get(session_id)
+        if cwd is None:
+            cwd = _initial_terminal_cwd(payload.run_id)
+            _terminal_cwds[session_id] = cwd
+
+        cd_result = _handle_cd(command, cwd)
+        if cd_result is not None:
+            _terminal_cwds[session_id] = cd_result
+            return {
+                "command": command,
+                "cwd": str(cd_result),
+                "exit_code": 0,
+                "stdout": str(cd_result),
+                "stderr": "",
+                "duration": 0.0,
+            }
+
+    started = datetime.now()
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        else:
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        duration = (datetime.now() - started).total_seconds()
+        return {
+            "command": command,
+            "cwd": str(cwd),
+            "exit_code": result.returncode,
+            "stdout": result.stdout[-20000:],
+            "stderr": result.stderr[-20000:],
+            "duration": round(duration, 3),
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "command": command,
+            "cwd": str(cwd),
+            "exit_code": 124,
+            "stdout": (exc.stdout or "")[-20000:] if isinstance(exc.stdout, str) else "",
+            "stderr": f"Command timed out after {timeout}s",
+            "duration": timeout,
+        }
+    except Exception as exc:
+        return {
+            "command": command,
+            "cwd": str(cwd),
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": f"{type(exc).__name__}: {exc}",
+            "duration": 0.0,
+        }
 
 
 @app.get("/api/runs/{run_id}/events")
@@ -176,6 +279,39 @@ def _state_path(run_id: str) -> Path:
     if not state_path.exists():
         raise HTTPException(status_code=404, detail="run not found")
     return state_path
+
+
+def _initial_terminal_cwd(run_id: str | None) -> Path:
+    if run_id:
+        try:
+            state = load_state(_state_path(run_id))
+            workspace = Path(state["workspace"]).resolve()
+            if workspace.exists():
+                return workspace
+        except Exception:
+            pass
+    return BASE_DIR.parent.resolve()
+
+
+def _handle_cd(command: str, cwd: Path) -> Path | None:
+    stripped = command.strip()
+    lower = stripped.lower()
+    if lower in {"cd", "pwd"}:
+        return cwd
+    if not (lower.startswith("cd ") or lower.startswith("chdir ")):
+        return None
+
+    _, _, target_text = stripped.partition(" ")
+    target_text = target_text.strip().strip('"').strip("'")
+    if not target_text:
+        return cwd
+    target = Path(target_text)
+    if not target.is_absolute():
+        target = cwd / target
+    target = target.resolve()
+    if not target.exists() or not target.is_dir():
+        raise HTTPException(status_code=400, detail=f"directory not found: {target_text}")
+    return target
 
 
 def _tail_traces(workspace: Path, max_lines: int = 120) -> list[dict[str, Any]]:

@@ -59,6 +59,8 @@ ENABLE_PARALLEL_TOOL_CALLS = os.environ.get("ENABLE_PARALLEL_TOOL_CALLS", "0") =
 
 # --- Paths ---
 WORKSPACE = os.path.abspath(os.environ.get("HARNESS_WORKSPACE", "./workspace"))
+WEB_TERMINAL_ENABLED = os.getenv("HARNESS_WEB_TERMINAL_ENABLED", "0") == "1"
+WEB_TERMINAL_TOKEN = os.getenv("HARNESS_WEB_TERMINAL_TOKEN", "")
 SPEC_FILE = "spec.md"
 FEEDBACK_FILE = "feedback.md"
 CONTRACT_FILE = "contract.md"
