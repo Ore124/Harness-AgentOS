@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
+from orchestrator.path_safety import WorkspacePathError, resolve_workspace_path
 from orchestrator.scheduler import Scheduler, confirm_profile, set_active
 from orchestrator.state import STATE_FILE, create_run_state, load_state, save_state, state_path_for_workspace
 
@@ -116,8 +117,11 @@ def pause_run(run_id: str) -> dict[str, Any]:
 def get_artifact(run_id: str, name: str):
     state = load_state(_state_path(run_id))
     root = Path(state["workspace"]).resolve()
-    target = (root / name).resolve()
-    if not str(target).startswith(str(root)) or not target.exists() or not target.is_file():
+    try:
+        target = resolve_workspace_path(root, name)
+    except WorkspacePathError:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="artifact not found")
     return FileResponse(str(target))
 

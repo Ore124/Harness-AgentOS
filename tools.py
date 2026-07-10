@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import config
+from orchestrator.path_safety import WorkspacePathError, resolve_workspace_path
 
 # Playwright is optional — only needed for evaluator browser testing
 try:
@@ -26,11 +27,10 @@ except ImportError:
 
 def _resolve(path: str) -> Path:
     """Resolve a relative path inside the workspace. Prevent escaping."""
-    p = Path(config.WORKSPACE, path).resolve()
-    ws = Path(config.WORKSPACE).resolve()
-    if not str(p).startswith(str(ws)):
-        raise ValueError(f"Path escapes workspace: {path}")
-    return p
+    try:
+        return resolve_workspace_path(config.WORKSPACE, path)
+    except WorkspacePathError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
