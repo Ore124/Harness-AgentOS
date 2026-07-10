@@ -14,6 +14,7 @@ from orchestrator.analytics import analyze_workspace, list_artifacts
 from orchestrator.hooks import HookManager
 from orchestrator.memory import MemoryStore, VALID_PROFILES
 from orchestrator.router import Router
+from orchestrator.run_context import RunContext
 from orchestrator.state import append_event, load_state, save_state
 
 log = logging.getLogger("harness")
@@ -46,9 +47,10 @@ class HarnessPhaseRunner:
         if profile_name not in VALID_PROFILES:
             raise ValueError(f"Cannot run phase without a concrete profile: {profile_name}")
 
-        config.WORKSPACE = str(Path(state["workspace"]).resolve())
-        Path(config.WORKSPACE).mkdir(parents=True, exist_ok=True)
-        self._ensure_git(Path(config.WORKSPACE))
+        context = RunContext.from_state(state)
+        context.workspace.mkdir(parents=True, exist_ok=True)
+        self._ensure_git(context.workspace)
+        config.WORKSPACE = str(context.workspace)
 
         profile = get_profile(profile_name)
         harness = Harness(profile)

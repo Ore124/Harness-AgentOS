@@ -13,6 +13,7 @@ from pathlib import Path
 
 import config
 from orchestrator.path_safety import WorkspacePathError, resolve_workspace_path
+from orchestrator.run_context import RunContext
 
 # Playwright is optional — only needed for evaluator browser testing
 try:
@@ -29,6 +30,13 @@ def _resolve(path: str) -> Path:
     """Resolve a relative path inside the workspace. Prevent escaping."""
     try:
         return resolve_workspace_path(config.WORKSPACE, path)
+    except WorkspacePathError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def resolve_for_context(ctx: RunContext, path: str) -> Path:
+    try:
+        return resolve_workspace_path(ctx.workspace, path)
     except WorkspacePathError as exc:
         raise ValueError(str(exc)) from exc
 
