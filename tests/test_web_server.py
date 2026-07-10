@@ -6,6 +6,19 @@ from pathlib import Path
 
 @unittest.skipIf(importlib.util.find_spec("fastapi") is None, "fastapi is not installed")
 class WebServerTests(unittest.TestCase):
+    def test_event_cursor_returns_only_new_events(self):
+        from orchestrator.store import OrchestratorStore
+
+        with tempfile.TemporaryDirectory() as root:
+            store = OrchestratorStore(Path(root) / "state.db")
+            store.save_state({"run_id": "r1", "workspace": root, "status": "running"})
+            store.append_event("r1", {"type": "one"})
+            first = store.list_events("r1")
+            store.append_event("r1", {"type": "two"})
+            second = store.list_events("r1", after_id=first[-1]["_event_id"])
+
+        self.assertEqual([event["type"] for event in second], ["two"])
+
     def test_terminal_endpoint_disabled_by_default(self):
         from fastapi.testclient import TestClient
         from web.server import app

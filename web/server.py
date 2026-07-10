@@ -18,7 +18,7 @@ from pydantic import BaseModel
 import config
 from orchestrator.path_safety import WorkspacePathError, resolve_workspace_path
 from orchestrator.scheduler import Scheduler, approve_human_action, confirm_profile, set_active
-from orchestrator.state import STATE_FILE, create_run_state, load_state, save_state, state_path_for_workspace
+from orchestrator.state import _store_for_workspace, STATE_FILE, create_run_state, load_state, save_state, state_path_for_workspace
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -232,22 +232,15 @@ def run_terminal_command(payload: TerminalRunRequest, request: Request) -> dict[
 @app.get("/api/runs/{run_id}/events")
 async def run_events(run_id: str):
     async def stream():
-        last_payload = ""
+        last_event_id = 0
         while True:
             try:
-                state = load_state(_state_path(run_id))
-                payload = {
-                    "state": state,
-                    "trace": _tail_traces(Path(state["workspace"])),
-                }
-                encoded = json.dumps(payload, ensure_ascii=False)
-                if encoded != last_payload:
-                    yield f"event: update\ndata: {encoded}\n\n"
-                    last_payload = encoded
-                if not state.get("active") and state.get("status") in {"completed", "error"}:
-                    await asyncio.sleep(1)
-                else:
-                    await asyncio.sleep(1)
+                store = _store_for_run(run_id)
+                events = store.list_events(run_id, after_id=last_event_id, limit=100)
+                for event in events:
+                    last_event_id = max(last_event_id, int(event["_event_id"]))
+                    yield f"event: message\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(1)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -279,6 +272,11 @@ def _state_path(run_id: str) -> Path:
     if not state_path.exists():
         raise HTTPException(status_code=404, detail="run not found")
     return state_path
+
+
+def _store_for_run(run_id: str):
+    state = load_state(_state_path(run_id))
+    return _store_for_workspace(state["workspace"])
 
 
 def _initial_terminal_cwd(run_id: str | None) -> Path:
