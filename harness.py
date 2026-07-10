@@ -100,6 +100,31 @@ class Harness:
         ) if reviewer_cfg.enabled else None
 
     def run(self, user_prompt: str) -> None:
+        """Run through the scheduler while preserving the CLI entry point."""
+        from orchestrator.scheduler import Scheduler
+        from orchestrator.state import create_run_state, save_state, state_path_for_workspace
+
+        if os.environ.get("HARNESS_FLAT_WORKSPACE"):
+            Path(config.WORKSPACE).mkdir(parents=True, exist_ok=True)
+        else:
+            from datetime import datetime
+
+            slug = re.sub(r"[^a-z0-9]+", "-", user_prompt.lower().strip())[:40].strip("-")
+            project_name = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_{slug}"
+            config.WORKSPACE = os.path.abspath(os.path.join(config.WORKSPACE, project_name))
+            Path(config.WORKSPACE).mkdir(parents=True, exist_ok=True)
+
+        state = create_run_state(
+            prompt=user_prompt,
+            workspace=config.WORKSPACE,
+            profile=self.profile.name(),
+            max_rounds=self.profile.max_rounds(),
+        )
+        state_path = state_path_for_workspace(config.WORKSPACE)
+        save_state(state_path, state)
+        Scheduler(state_path).run_until_idle()
+
+    def _legacy_run(self, user_prompt: str) -> None:
         # Create a unique project subdirectory under workspace
         # (skip if HARNESS_FLAT_WORKSPACE is set — used for benchmarks
         #  where outputs must land directly in the workspace root)
