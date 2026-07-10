@@ -19,8 +19,15 @@ class RouteDecision:
     source: str
     reasoning: str
     alternatives: list[dict[str, Any]]
+    task_type: str
+    task_type_confidence: float
+    task_type_source: str
     requires_confirmation: bool = False
     memory_refs: list[str] | None = None
+    short_term_refs: list[str] | None = None
+    long_term_refs: list[str] | None = None
+    memory_adjustments: list[dict[str, Any]] | None = None
+    strategy_hints: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -29,8 +36,15 @@ class RouteDecision:
             "source": self.source,
             "reasoning": self.reasoning,
             "alternatives": self.alternatives,
+            "task_type": self.task_type,
+            "task_type_confidence": round(self.task_type_confidence, 3),
+            "task_type_source": self.task_type_source,
             "requires_confirmation": self.requires_confirmation,
             "memory_refs": self.memory_refs or [],
+            "short_term_refs": self.short_term_refs or [],
+            "long_term_refs": self.long_term_refs or [],
+            "memory_adjustments": self.memory_adjustments or [],
+            "strategy_hints": self.strategy_hints or [],
         }
 
 
@@ -48,6 +62,8 @@ class Router:
         self.confirmation_threshold = confirmation_threshold
 
     def route(self, prompt: str, override_profile: str | None = None) -> RouteDecision:
+        task_type, task_type_confidence, task_type_source = classify_task_type(prompt)
+
         if override_profile and override_profile != "auto":
             if override_profile not in VALID_PROFILES:
                 raise ValueError(f"Unknown profile override: {override_profile}")
@@ -57,8 +73,15 @@ class Router:
                 source="manual",
                 reasoning="User explicitly selected a profile.",
                 alternatives=[],
+                task_type=task_type,
+                task_type_confidence=task_type_confidence,
+                task_type_source=task_type_source,
                 requires_confirmation=False,
                 memory_refs=[],
+                short_term_refs=[],
+                long_term_refs=[],
+                memory_adjustments=[],
+                strategy_hints=[],
             )
 
         candidates = self._rule_candidates(prompt)
@@ -72,7 +95,7 @@ class Router:
                 candidates = self._merge_llm_decision(candidates, llm_decision)
                 source = "llm"
 
-        candidates, memory_refs = self.memory.adjust_candidates(candidates, prompt)
+        candidates, memory_info = self.memory.adjust_candidates(candidates, prompt, task_type)
         top = candidates[0]
         confidence = float(top.get("confidence", 0.0))
         requires_confirmation = confidence < self.confirmation_threshold
@@ -83,8 +106,15 @@ class Router:
             source=source,
             reasoning=top.get("reason", ""),
             alternatives=candidates[:4],
+            task_type=task_type,
+            task_type_confidence=task_type_confidence,
+            task_type_source=task_type_source,
             requires_confirmation=requires_confirmation,
-            memory_refs=memory_refs,
+            memory_refs=memory_info.get("memory_refs", []),
+            short_term_refs=memory_info.get("short_term_refs", []),
+            long_term_refs=memory_info.get("long_term_refs", []),
+            memory_adjustments=memory_info.get("memory_adjustments", []),
+            strategy_hints=memory_info.get("strategy_hints", []),
         )
 
     def _rule_candidates(self, prompt: str) -> list[dict[str, Any]]:
@@ -186,3 +216,47 @@ class Router:
             merged.append(item)
         merged.sort(key=lambda c: c["confidence"], reverse=True)
         return merged
+
+
+def classify_task_type(prompt: str) -> tuple[str, float, str]:
+    """Classify the task into a stable memory bucket."""
+    text = prompt.lower()
+    buckets = {
+        "web_app": _score_terms(text, [
+            "web", "website", "browser", "ui", "page", "component", "react",
+            "frontend", "dashboard", "html", "css", "javascript", "button",
+            "form", "app",
+        ]),
+        "terminal_ops": _score_terms(text, [
+            "terminal", "shell", "cli", "command", "linux", "file", "directory",
+            "symlink", "permission", "install", "server", "bash", "script",
+            "docker", "process",
+        ]),
+        "code_repair": _score_terms(text, [
+            "bug", "fix", "issue", "failing test", "regression", "traceback",
+            "patch", "repository", "function", "class", "pytest", "unit test",
+            "typeerror", "exception",
+        ]),
+        "reasoning": _score_terms(text, [
+            "explain", "why", "calculate", "prove", "derive", "answer",
+            "math", "reason", "logic", "compare", "analyze", "question",
+            "equation",
+        ]),
+    }
+    if re.search(r"\b(build|create|make)\b", text) and re.search(r"\b(app|web|ui|page|site|browser)\b", text):
+        buckets["web_app"] += 0.5
+
+    best_type, best_score = max(buckets.items(), key=lambda item: item[1])
+    total = sum(buckets.values())
+    if best_score <= 0 or total <= 0:
+        return "unclear", 0.25, "rule"
+    confidence = 0.35 + min(best_score / total, 1.0) * 0.6
+    return best_type, round(confidence, 3), "rule"
+
+
+def _score_terms(text: str, terms: list[str]) -> float:
+    score = 0.0
+    for term in terms:
+        if term in text:
+            score += 1.0 + min(len(term), 12) / 20.0
+    return score

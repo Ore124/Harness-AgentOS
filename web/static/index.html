@@ -7,269 +7,912 @@
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f5f1;
-      --ink: #141414;
-      --muted: #686760;
-      --line: #d7d3c8;
-      --panel: #ffffff;
-      --accent: #255f4f;
-      --danger: #a33a2f;
-      --code: #1d1f21;
+      --page: #eef4f6;
+      --frame: #f8fbfc;
+      --surface: #ffffff;
+      --surface-soft: #f3f8fa;
+      --sidebar: #edf6f8;
+      --line: #d9e6eb;
+      --line-strong: #c4d7de;
+      --ink: #18272d;
+      --muted: #6f858e;
+      --faint: #9caeb5;
+      --accent: #19aeda;
+      --accent-strong: #0b93be;
+      --blue-soft: #dff6fd;
+      --orange: #f4a62a;
+      --green: #24b34b;
+      --pink: #f24b7b;
+      --danger: #c43e3e;
+      --shadow: 0 18px 50px rgba(51, 80, 92, 0.16);
     }
+
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
+      min-height: 100svh;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
+      background:
+        radial-gradient(circle at 16% 10%, rgba(25, 174, 218, 0.18), transparent 28%),
+        radial-gradient(circle at 88% 18%, rgba(244, 166, 42, 0.15), transparent 24%),
+        linear-gradient(135deg, #f7fbfc 0%, var(--page) 54%, #e8f1f4 100%);
       color: var(--ink);
+      overflow: hidden;
     }
-    header {
+
+    button, textarea, select, input {
+      font: inherit;
+    }
+
+    .app-shell {
+      height: calc(100svh - 48px);
+      margin: 24px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: var(--frame);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: 36px 1fr;
+    }
+
+    .window-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 18px 28px;
+      padding: 0 13px;
+      background: #fefefe;
       border-bottom: 1px solid var(--line);
-      background: rgba(246, 245, 241, 0.92);
-      position: sticky;
-      top: 0;
-      z-index: 2;
-    }
-    h1 {
-      margin: 0;
-      font-size: 19px;
-      letter-spacing: 0;
-    }
-    .status-pill {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 6px 11px;
       font-size: 12px;
-      color: var(--muted);
-      background: #fff;
     }
-    main {
+
+    .window-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+    }
+
+    .mark {
+      width: 17px;
+      height: 17px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 5px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 12px;
+    }
+
+    .window-controls {
+      display: flex;
+      gap: 14px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .app-body {
+      min-height: 0;
       display: grid;
-      grid-template-columns: 360px 1fr;
-      min-height: calc(100svh - 62px);
+      grid-template-columns: 286px 1fr;
     }
-    aside {
+
+    .sidebar {
+      min-height: 0;
+      background: var(--sidebar);
       border-right: 1px solid var(--line);
-      padding: 24px;
-      background: #fbfaf7;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      padding: 22px 14px;
+      gap: 18px;
     }
-    section.workspace {
-      padding: 24px;
-      min-width: 0;
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 10px 10px;
+      font-size: 24px;
+      font-weight: 900;
+      letter-spacing: -0.02em;
     }
-    label {
-      display: block;
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 8px;
+
+    .brand .logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      display: grid;
+      place-items: center;
+      background: var(--accent);
+      color: #fff;
+      font-size: 19px;
     }
-    textarea, select {
+
+    .brand span span {
+      color: var(--accent);
+    }
+
+    .create-box {
+      display: grid;
+      gap: 10px;
+      padding: 0 0 4px;
+    }
+
+    .feature-prompt {
+      width: 100%;
+      min-height: 128px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--surface);
+      color: var(--ink);
+      line-height: 1.45;
+      outline: none;
+    }
+
+    .feature-prompt:focus,
+    .profile-select:focus,
+    .search:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(25, 174, 218, 0.15);
+    }
+
+    .profile-select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #fff;
+      padding: 10px 11px;
+      background: var(--surface);
       color: var(--ink);
-      font: inherit;
-      padding: 12px;
       outline: none;
     }
-    textarea {
-      min-height: 150px;
-      resize: vertical;
-      line-height: 1.45;
+
+    .button-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
     }
-    textarea:focus, select:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(37, 95, 79, 0.12);
-    }
-    .field { margin-bottom: 18px; }
-    .actions {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
+
     button {
       border: 0;
       border-radius: 8px;
+      min-height: 38px;
+      padding: 0 13px;
+      cursor: pointer;
+      font-weight: 800;
+      color: var(--ink);
+      background: #e3eef2;
+      transition: transform 150ms ease, background 150ms ease, opacity 150ms ease;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: #06222c;
+    }
+
+    button.danger {
+      background: #ffe1e1;
+      color: var(--danger);
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .nav-group {
+      display: grid;
+      gap: 6px;
+      overflow: auto;
+    }
+
+    .nav-label {
+      margin: 14px 11px 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      padding: 0 11px;
+      border-radius: 8px;
+      color: var(--muted);
+      font-weight: 800;
+      font-size: 14px;
+    }
+
+    .nav-item.clickable {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .nav-item.clickable:hover {
+      background: #e2eff4;
+      color: var(--ink);
+    }
+
+    .nav-item.active {
+      background: var(--blue-soft);
+      color: var(--ink);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .nav-item .key {
+      margin-left: auto;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #d8e7ed;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .nav-item.active .key {
       background: var(--accent);
       color: #fff;
-      font-weight: 700;
-      padding: 10px 13px;
-      cursor: pointer;
-      transition: transform 140ms ease, opacity 140ms ease;
     }
-    button.secondary {
-      background: #e5e1d6;
-      color: var(--ink);
+
+    .sidebar-footer {
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
     }
-    button.danger {
-      background: var(--danger);
-    }
-    button:hover { transform: translateY(-1px); }
-    button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
-    .layout {
+
+    .content {
+      min-width: 0;
+      min-height: 0;
       display: grid;
-      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
-      gap: 24px;
-      align-items: start;
+      grid-template-rows: auto auto auto 1fr;
+      background: rgba(255, 255, 255, 0.68);
     }
-    .panel {
-      background: var(--panel);
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(248, 251, 252, 0.86);
+    }
+
+    .title-block h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+    }
+
+    .title-block p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 13px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      overflow: hidden;
-      margin-bottom: 20px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
     }
-    .panel h2 {
-      margin: 0;
-      padding: 14px 16px;
-      font-size: 14px;
-      border-bottom: 1px solid var(--line);
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--faint);
     }
-    .panel-body { padding: 16px; }
-    .timeline {
+
+    .status-dot.live { background: var(--green); }
+    .status-dot.warn { background: var(--orange); }
+    .status-dot.error { background: var(--danger); }
+
+    .toolbar {
       display: grid;
-      grid-template-columns: repeat(6, minmax(78px, 1fr));
+      grid-template-columns: minmax(230px, 560px) 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.58);
+    }
+
+    .search {
+      width: 100%;
+      height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 0 13px;
+      color: var(--ink);
+      outline: none;
+    }
+
+    .route-note {
+      color: var(--muted);
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mini-metrics {
+      display: flex;
       gap: 8px;
     }
-    .step {
-      border-bottom: 3px solid var(--line);
-      padding-bottom: 8px;
+
+    .metric {
+      min-width: 74px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      text-align: center;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 15px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .memory-panel {
+      display: grid;
+      grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.1fr) minmax(260px, 1.2fr);
+      gap: 12px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(243, 248, 250, 0.72);
+    }
+
+    .memory-box {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--surface);
+      padding: 11px 12px;
+    }
+
+    .memory-box h2 {
+      margin: 0 0 8px;
       font-size: 12px;
       color: var(--muted);
-      transition: color 160ms ease, border-color 160ms ease;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
     }
-    .step.active {
+
+    .memory-line {
       color: var(--ink);
-      border-color: var(--accent);
-      font-weight: 700;
-    }
-    pre {
-      margin: 0;
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: var(--code);
-      color: #f1efe6;
-      border-radius: 8px;
-      padding: 14px;
-      max-height: 430px;
-      overflow: auto;
       font-size: 12px;
       line-height: 1.45;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .trace-item {
-      padding: 10px 0;
+
+    .memory-list {
+      display: grid;
+      gap: 6px;
+      max-height: 78px;
+      overflow: auto;
+    }
+
+    .memory-chip {
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--accent-strong);
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 800;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .board-wrap {
+      min-height: 0;
+      overflow: hidden;
+      padding: 18px 24px 22px;
+    }
+
+    .view {
+      display: none;
+      min-height: 0;
+    }
+
+    .view.active {
+      display: block;
+    }
+
+    .view.board-wrap.active {
+      display: block;
+    }
+
+    .board {
+      height: 100%;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(245px, 1fr));
+      gap: 18px;
+      min-width: 1040px;
+    }
+
+    .column {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(243, 248, 250, 0.86);
+      overflow: hidden;
+    }
+
+    .column-header {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 12px 14px;
       border-bottom: 1px solid var(--line);
-      font-size: 13px;
+      font-weight: 900;
+      font-size: 14px;
     }
-    .trace-item:last-child { border-bottom: 0; }
-    .trace-meta {
+
+    .column-header .count {
+      margin-left: auto;
+      min-width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #e0ebef;
       color: var(--muted);
       font-size: 12px;
-      margin-bottom: 3px;
     }
-    .artifact a {
-      display: block;
-      color: var(--accent);
-      text-decoration: none;
-      padding: 7px 0;
-      border-bottom: 1px solid var(--line);
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--faint);
+    }
+
+    .dot.code { background: var(--accent); }
+    .dot.test { background: var(--orange); }
+    .dot.review { background: var(--pink); }
+    .dot.done { background: var(--green); }
+
+    .cards {
+      min-height: 0;
+      overflow: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .task-card {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--surface);
+      padding: 12px;
+      box-shadow: 0 8px 18px rgba(57, 88, 100, 0.08);
+      animation: liftIn 220ms ease both;
+    }
+
+    .task-card.live {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(25, 174, 218, 0.16), 0 10px 20px rgba(57, 88, 100, 0.10);
+    }
+
+    .card-meta {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    .agent-chip {
+      color: var(--accent-strong);
+      background: var(--blue-soft);
+      border-radius: 999px;
+      padding: 3px 7px;
+    }
+
+    .task-card h3 {
+      margin: 0;
       font-size: 13px;
+      line-height: 1.42;
     }
+
+    .task-card p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .card-actions {
+      display: flex;
+      gap: 7px;
+      margin-top: 12px;
+    }
+
+    .tiny-btn {
+      min-height: 28px;
+      padding: 0 10px;
+      font-size: 11px;
+      background: #e8f2f5;
+      color: var(--ink);
+    }
+
     .recommendation {
       display: none;
-      border: 1px solid #d9c78b;
-      background: #fff8dc;
+      margin-top: 12px;
+      border: 1px solid #f2ce82;
+      background: #fff8df;
       border-radius: 8px;
-      padding: 14px;
-      margin-top: 18px;
+      padding: 12px;
+      font-size: 13px;
     }
+
     .recommendation.visible { display: block; }
-    .small {
+
+    .profile-choices {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 9px;
+    }
+
+    .terminal-view {
+      min-height: 0;
+      height: 100%;
+      padding: 18px 24px 22px;
+    }
+
+    .terminal-panel {
+      height: 100%;
+      min-height: 420px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fbfdfe;
+    }
+
+    .terminal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-soft);
+      font-weight: 900;
+    }
+
+    .terminal-cwd {
       color: var(--muted);
       font-size: 12px;
-      line-height: 1.45;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    @media (max-width: 920px) {
-      main, .layout { grid-template-columns: 1fr; }
-      aside { border-right: 0; border-bottom: 1px solid var(--line); }
-      .timeline { grid-template-columns: repeat(3, 1fr); }
+
+    .terminal-output {
+      overflow: auto;
+      padding: 14px;
+      background: #102027;
+      color: #d8f7ef;
+      font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+
+    .terminal-line.command {
+      color: #74ddff;
+      margin-top: 10px;
+    }
+
+    .terminal-line.stderr {
+      color: #ffb0b0;
+    }
+
+    .terminal-input-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    .terminal-input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0 12px;
+      min-height: 40px;
+      outline: none;
+      color: var(--ink);
+      background: #fff;
+    }
+
+    .terminal-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(25, 174, 218, 0.15);
+    }
+
+    @keyframes liftIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 1100px) {
+      body { overflow: auto; }
+      .app-shell { height: auto; min-height: calc(100svh - 24px); margin: 12px; }
+      .app-body { grid-template-columns: 1fr; }
+      .sidebar { grid-template-rows: auto auto auto; }
+      .board-wrap { overflow-x: auto; }
+      .toolbar { grid-template-columns: 1fr; }
+      .memory-panel { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Harness AgentOS Console</h1>
-    <div class="status-pill" id="connection">Idle</div>
-  </header>
-  <main>
-    <aside>
-      <div class="field">
-        <label for="prompt">Function to build or task to solve</label>
-        <textarea id="prompt" placeholder="Build a browser-based kanban board with drag and drop, local persistence, and a compact analytics view."></textarea>
-      </div>
-      <div class="field">
-        <label for="profile">Profile</label>
-        <select id="profile">
-          <option value="auto">Auto route</option>
-          <option value="app-builder">app-builder</option>
-          <option value="terminal">terminal</option>
-          <option value="swe-bench">swe-bench</option>
-          <option value="reasoning">reasoning</option>
-        </select>
-      </div>
-      <div class="actions">
-        <button id="start">Run</button>
-        <button class="secondary" id="resume" disabled>Resume</button>
-        <button class="danger" id="pause" disabled>Pause</button>
-      </div>
-      <div class="recommendation" id="recommendation">
-        <strong>Profile confirmation required</strong>
-        <p class="small" id="routeReason"></p>
-        <div class="actions" id="profileChoices"></div>
-      </div>
-    </aside>
-    <section class="workspace">
-      <div class="layout">
-        <div>
-          <div class="panel">
-            <h2>Run timeline</h2>
-            <div class="panel-body">
-              <div class="timeline" id="timeline"></div>
-            </div>
+  <div class="app-shell">
+    <div class="window-bar">
+      <div class="window-title"><span class="mark">&lt;/&gt;</span> Harness AgentOS - Autonomous AI Development Studio</div>
+      <div class="window-controls"><span>-</span><span>□</span><span>×</span></div>
+    </div>
+
+    <div class="app-body">
+      <aside class="sidebar">
+        <div class="brand"><div class="logo">&lt;/&gt;</div><span>harness<span>.</span></span></div>
+
+        <div class="create-box">
+          <textarea class="feature-prompt" id="prompt" placeholder="Describe the feature or task to build..."></textarea>
+          <select class="profile-select" id="profile">
+            <option value="auto">Auto route profile</option>
+            <option value="app-builder">app-builder</option>
+            <option value="terminal">terminal</option>
+            <option value="swe-bench">swe-bench</option>
+            <option value="reasoning">reasoning</option>
+          </select>
+          <div class="button-row">
+            <button class="primary" id="start">+ Add Feature</button>
+            <button id="resume" disabled>Resume</button>
           </div>
-          <div class="panel">
-            <h2>Agent activity</h2>
-            <div class="panel-body" id="trace"></div>
+          <button class="danger" id="pause" disabled>Pause Run</button>
+          <div class="recommendation" id="recommendation">
+            <strong>Profile confirmation required</strong>
+            <div id="routeReason"></div>
+            <div class="profile-choices" id="profileChoices"></div>
+          </div>
+          <div class="recommendation" id="approvalBox">
+            <strong>Human approval required</strong>
+            <div id="approvalReason"></div>
+            <div class="profile-choices"><button id="approveRun">Approve and continue</button></div>
           </div>
         </div>
-        <div>
-          <div class="panel">
-            <h2>State</h2>
-            <div class="panel-body"><pre id="state">{}</pre></div>
+
+        <nav class="nav-group">
+          <div class="nav-label">Project</div>
+          <div class="nav-item active">▦ Kanban Board <span class="key">K</span></div>
+          <div class="nav-item">⟲ Agent Runner <span class="key" id="agentCount">0</span></div>
+          <div class="nav-label">Tools</div>
+          <div class="nav-item">▤ Spec Editor <span class="key">S</span></div>
+          <div class="nav-item">◌ AI Profiles <span class="key">P</span></div>
+          <div class="nav-item">⌁ Terminal <span class="key">T</span></div>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="nav-item">□ Artifacts <span class="key" id="artifactCount">0</span></div>
+          <div class="nav-item">⚙ Settings <span class="key">G</span></div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div class="title-block">
+            <h1>Kanban Board</h1>
+            <p id="subtitle">No active run</p>
           </div>
-          <div class="panel">
-            <h2>Artifacts</h2>
-            <div class="panel-body artifact" id="artifacts"><span class="small">No artifacts yet.</span></div>
+          <div class="top-actions">
+            <div class="status-pill"><span class="status-dot" id="statusDot"></span><span id="connection">Idle</span></div>
+            <button id="refresh" title="Refresh current run">Refresh</button>
+            <button class="primary" id="quickRun">Auto Mode</button>
+          </div>
+        </header>
+
+        <div class="toolbar">
+          <input class="search" id="search" placeholder="Search agent activity by keyword...">
+          <div class="route-note" id="routeNote">Route decision and memory adjustments appear here.</div>
+          <div class="mini-metrics">
+            <div class="metric"><strong id="roundMetric">-</strong><span>Round</span></div>
+            <div class="metric"><strong id="scoreMetric">-</strong><span>Score</span></div>
+            <div class="metric"><strong id="eventMetric">0</strong><span>Events</span></div>
           </div>
         </div>
-      </div>
-    </section>
-  </main>
+
+        <section class="memory-panel" id="memoryPanel">
+          <div class="memory-box">
+            <h2>Memory Route</h2>
+            <div class="memory-line" id="memoryTaskType">Task type: -</div>
+            <div class="memory-line" id="memoryProfile">Profile: -</div>
+            <div class="memory-line" id="memoryConfidence">Confidence: -</div>
+          </div>
+          <div class="memory-box">
+            <h2>Adjustments</h2>
+            <div class="memory-list" id="memoryAdjustments"><span class="memory-chip">No memory adjustments yet</span></div>
+          </div>
+          <div class="memory-box">
+            <h2>Strategy Hints</h2>
+            <div class="memory-list" id="strategyHints"><span class="memory-chip">No strategy hints yet</span></div>
+          </div>
+        </section>
+
+        <section class="board-wrap">
+          <div class="board">
+            <article class="column">
+              <div class="column-header"><span class="dot code"></span> Code Writing <span class="count" id="codeCount">0</span></div>
+              <div class="cards" id="codeCards"></div>
+            </article>
+            <article class="column">
+              <div class="column-header"><span class="dot test"></span> Running Tests <span class="count" id="testCount">0</span></div>
+              <div class="cards" id="testCards"></div>
+            </article>
+            <article class="column">
+              <div class="column-header"><span class="dot review"></span> Modified Files <span class="count" id="fileCount">0</span></div>
+              <div class="cards" id="fileCards"></div>
+            </article>
+            <article class="column">
+              <div class="column-header"><span class="dot done"></span> Verified / Logs <span class="count" id="doneCount">0</span></div>
+              <div class="cards" id="doneCards"></div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
   <script>
-    const phases = ["route", "plan", "contract", "build", "evaluate", "analyze"];
     let currentRun = null;
     let source = null;
+    let lastState = null;
+    let lastTrace = [];
 
     const qs = (id) => document.getElementById(id);
+    const viewTitle = document.querySelector(".title-block h1");
+    const kanbanView = document.querySelector(".board-wrap");
+    const navItems = Array.from(document.querySelectorAll(".nav-item"));
+    const kanbanNav = navItems.find(item => item.textContent.includes("Kanban"));
+    const terminalNav = navItems.find(item => item.textContent.includes("Terminal"));
 
-    qs("timeline").innerHTML = phases.map(p => `<div class="step" data-phase="${p}">${p}</div>`).join("");
+    let activeView = "kanban";
+    let terminalCwd = "project root";
+    let terminalBusy = false;
 
-    qs("start").addEventListener("click", async () => {
+    initializeViews();
+
+    qs("start").addEventListener("click", startRun);
+    qs("quickRun").addEventListener("click", startRun);
+    qs("pause").addEventListener("click", async () => {
+      if (!currentRun) return;
+      const state = await post(`/api/runs/${currentRun}/pause`);
+      renderState(state, lastTrace);
+    });
+    qs("resume").addEventListener("click", async () => {
+      if (!currentRun) return;
+      const state = await post(`/api/runs/${currentRun}/resume`);
+      renderState(state, lastTrace);
+      attachEvents(currentRun);
+    });
+    qs("approveRun").addEventListener("click", async () => {
+      if (!currentRun) return;
+      const state = await post(`/api/runs/${currentRun}/approve`);
+      renderState(state, lastTrace);
+      attachEvents(currentRun);
+    });
+    qs("refresh").addEventListener("click", async () => {
+      if (!currentRun) return;
+      const res = await fetch(`/api/runs/${currentRun}`);
+      renderState(await res.json(), lastTrace);
+    });
+    qs("search").addEventListener("input", () => renderBoard(lastState, lastTrace));
+
+    qs("terminalRun").addEventListener("click", runTerminalCommand);
+    qs("terminalInput").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runTerminalCommand();
+      }
+    });
+
+    function initializeViews() {
+      kanbanView.id = "kanbanView";
+      kanbanView.classList.add("view", "active");
+      kanbanView.insertAdjacentHTML("afterend", `
+        <section class="terminal-view view" id="terminalView">
+          <div class="terminal-panel">
+            <div class="terminal-header">
+              <div>Terminal</div>
+              <div class="terminal-cwd" id="terminalCwd">cwd: project root</div>
+            </div>
+            <div class="terminal-output" id="terminalOutput">Harness terminal ready.
+Commands run on the backend through FastAPI.
+Use cd to change directory. Press Enter to run.
+</div>
+            <div class="terminal-input-row">
+              <input class="terminal-input" id="terminalInput" placeholder="python --version">
+              <button class="primary" id="terminalRun">Run</button>
+            </div>
+          </div>
+        </section>
+      `);
+
+      if (kanbanNav) {
+        kanbanNav.classList.add("clickable");
+        kanbanNav.addEventListener("click", () => switchView("kanban"));
+      }
+      if (terminalNav) {
+        terminalNav.classList.add("clickable");
+        terminalNav.addEventListener("click", () => switchView("terminal"));
+      }
+    }
+
+    function switchView(view) {
+      activeView = view;
+      qs("kanbanView").classList.toggle("active", view === "kanban");
+      qs("terminalView").classList.toggle("active", view === "terminal");
+      if (kanbanNav) kanbanNav.classList.toggle("active", view === "kanban");
+      if (terminalNav) terminalNav.classList.toggle("active", view === "terminal");
+      viewTitle.textContent = view === "terminal" ? "Terminal" : "Kanban Board";
+      qs("search").placeholder = view === "terminal" ? "Terminal is active below..." : "Search agent activity by keyword...";
+    }
+
+    async function startRun() {
       const prompt = qs("prompt").value.trim();
       if (!prompt) return;
       const res = await fetch("/api/runs", {
@@ -279,22 +922,9 @@
       });
       const state = await res.json();
       currentRun = state.run_id;
-      attachEvents(currentRun);
-      renderState(state, []);
-    });
-
-    qs("pause").addEventListener("click", async () => {
-      if (!currentRun) return;
-      const state = await post(`/api/runs/${currentRun}/pause`);
-      renderState(state, []);
-    });
-
-    qs("resume").addEventListener("click", async () => {
-      if (!currentRun) return;
-      const state = await post(`/api/runs/${currentRun}/resume`);
       renderState(state, []);
       attachEvents(currentRun);
-    });
+    }
 
     async function post(url, body = {}) {
       const res = await fetch(url, {
@@ -303,6 +933,47 @@
         body: JSON.stringify(body)
       });
       return await res.json();
+    }
+
+    async function runTerminalCommand() {
+      if (terminalBusy) return;
+      const input = qs("terminalInput");
+      const command = input.value.trim();
+      if (!command) return;
+
+      terminalBusy = true;
+      qs("terminalRun").disabled = true;
+      appendTerminalLine(`> ${command}`, "command");
+      input.value = "";
+
+      try {
+        const result = await post("/api/terminal/run", {
+          command,
+          session_id: "browser-console",
+          run_id: currentRun,
+          timeout: 120
+        });
+        terminalCwd = result.cwd || terminalCwd;
+        qs("terminalCwd").textContent = `cwd: ${terminalCwd}`;
+        if (result.stdout) appendTerminalLine(result.stdout, "stdout");
+        if (result.stderr) appendTerminalLine(result.stderr, "stderr");
+        appendTerminalLine(`[exit ${result.exit_code}] ${result.duration}s`, result.exit_code === 0 ? "stdout" : "stderr");
+      } catch (error) {
+        appendTerminalLine(`request failed: ${error}`, "stderr");
+      } finally {
+        terminalBusy = false;
+        qs("terminalRun").disabled = false;
+        input.focus();
+      }
+    }
+
+    function appendTerminalLine(text, kind) {
+      const output = qs("terminalOutput");
+      const line = document.createElement("div");
+      line.className = `terminal-line ${kind}`;
+      line.textContent = text;
+      output.appendChild(line);
+      output.scrollTop = output.scrollHeight;
     }
 
     function attachEvents(runId) {
@@ -315,32 +986,69 @@
       });
       source.addEventListener("error", () => {
         qs("connection").textContent = "Reconnecting";
+        qs("statusDot").className = "status-dot warn";
       });
     }
 
     function renderState(state, trace) {
+      lastState = state;
+      lastTrace = trace || lastTrace;
       currentRun = state.run_id;
-      qs("state").textContent = JSON.stringify({
-        run_id: state.run_id,
-        profile: state.profile,
-        status: state.status,
-        active: state.active,
-        phase: state.phase,
-        next_action: state.next_action,
-        round_num: state.round_num,
-        score_history: state.score_history,
-        last_error: state.last_error,
-        route_decision: state.route_decision
-      }, null, 2);
 
-      document.querySelectorAll(".step").forEach(el => {
-        el.classList.toggle("active", el.dataset.phase === state.phase || el.dataset.phase === state.next_action);
-      });
+      qs("subtitle").textContent = `${state.prompt || "No prompt"} · ${state.profile || "auto"}`;
+      qs("connection").textContent = `${state.status} · ${state.phase || "idle"}`;
+      qs("statusDot").className = "status-dot " + (state.status === "error" ? "error" : state.active ? "live" : "warn");
+      qs("roundMetric").textContent = state.round_num || "-";
+      const scores = state.score_history || [];
+      qs("scoreMetric").textContent = scores.length ? scores[scores.length - 1].toFixed ? scores[scores.length - 1].toFixed(1) : scores[scores.length - 1] : "-";
+      qs("eventMetric").textContent = (state.events || []).length + (trace || []).length;
       qs("pause").disabled = !state.active;
       qs("resume").disabled = state.active || state.status === "completed";
+
+      const decision = state.route_decision;
+      qs("routeNote").textContent = decision
+        ? `${decision.source || "route"} -> ${decision.profile || "needs confirmation"} · ${(decision.confidence * 100).toFixed(0)}% · ${decision.reasoning || ""}`
+        : "Route decision and memory adjustments appear here.";
+
       renderRecommendation(state);
-      renderTrace(trace);
-      renderArtifacts(state);
+      renderApproval(state);
+      renderMemory(state);
+      renderBoard(state, trace || []);
+    }
+
+    function renderMemory(state) {
+      const decision = state && state.route_decision ? state.route_decision : {};
+      const taskType = decision.task_type || state.task_type || "-";
+      const profile = state.profile || decision.profile || "auto";
+      const confidence = typeof decision.confidence === "number" ? `${Math.round(decision.confidence * 100)}%` : "-";
+      const taskConfidence = typeof decision.task_type_confidence === "number" ? `${Math.round(decision.task_type_confidence * 100)}%` : "-";
+
+      qs("memoryTaskType").textContent = `Task type: ${taskType} (${taskConfidence})`;
+      qs("memoryProfile").textContent = `Profile: ${profile}`;
+      qs("memoryConfidence").textContent = `Route confidence: ${confidence}`;
+
+      const adjustments = decision.memory_adjustments || [];
+      const refs = [...(decision.short_term_refs || []), ...(decision.long_term_refs || [])];
+      if (!adjustments.length && !refs.length) {
+        qs("memoryAdjustments").innerHTML = '<span class="memory-chip">No memory adjustments yet</span>';
+      } else {
+        const adjustmentHtml = adjustments.map(item => {
+          const total = Number(item.total_delta || 0);
+          return `<span class="memory-chip">${escapeHtml(item.profile)} ${total >= 0 ? "+" : ""}${total.toFixed(2)} (${Math.round((item.before || 0) * 100)}% -> ${Math.round((item.after || 0) * 100)}%)</span>`;
+        });
+        const refHtml = refs.slice(0, 4).map(ref => `<span class="memory-chip">${escapeHtml(ref)}</span>`);
+        qs("memoryAdjustments").innerHTML = [...adjustmentHtml, ...refHtml].join("");
+      }
+
+      const hints = state.strategy_hints || decision.strategy_hints || [];
+      if (!hints.length) {
+        qs("strategyHints").innerHTML = '<span class="memory-chip">No strategy hints yet</span>';
+      } else {
+        qs("strategyHints").innerHTML = hints.slice(0, 5).map(hint => {
+          const pct = typeof hint.confidence === "number" ? `${Math.round(hint.confidence * 100)}%` : "";
+          return `<span class="memory-chip">${escapeHtml(hint.profile || "profile")} 路 ${escapeHtml(hint.failure_reason || "pattern")} ${pct}: ${escapeHtml(hint.hint || "")}</span>`;
+        }).join("");
+      }
     }
 
     function renderRecommendation(state) {
@@ -353,42 +1061,159 @@
       box.classList.add("visible");
       qs("routeReason").textContent = decision.reasoning || "Confidence is too low to execute automatically.";
       qs("profileChoices").innerHTML = (decision.alternatives || []).map(item => {
-        return `<button class="secondary" data-profile="${item.profile}">${item.profile} ${(item.confidence * 100).toFixed(0)}%</button>`;
+        return `<button data-profile="${item.profile}">${escapeHtml(item.profile)} ${(item.confidence * 100).toFixed(0)}%</button>`;
       }).join("");
       qs("profileChoices").querySelectorAll("button").forEach(btn => {
         btn.addEventListener("click", async () => {
           const state = await post(`/api/runs/${currentRun}/confirm-profile`, {profile: btn.dataset.profile});
-          renderState(state, []);
+          renderState(state, lastTrace);
           attachEvents(currentRun);
         });
       });
     }
 
-    function renderTrace(trace) {
-      if (!trace.length) {
-        qs("trace").innerHTML = '<span class="small">No agent trace yet.</span>';
+    function renderApproval(state) {
+      const box = qs("approvalBox");
+      if (!state.requires_human_approval && state.status !== "waiting_approval") {
+        box.classList.remove("visible");
         return;
       }
-      qs("trace").innerHTML = trace.slice(-80).reverse().map(event => {
-        const title = `${event.agent || "scheduler"} · ${event.event || event.type || "event"} · ${event._file || ""}`;
-        const body = event.tool ? `${event.tool}: ${event.result || ""}` : (event.content || event.message || event.reason || JSON.stringify(event).slice(0, 300));
-        return `<div class="trace-item"><div class="trace-meta">${escapeHtml(title)}</div>${escapeHtml(String(body).slice(0, 800))}</div>`;
-      }).join("");
+      const approval = state.human_approval || {};
+      box.classList.add("visible");
+      qs("approvalReason").textContent = approval.reason || "This run requires approval before continuing.";
     }
 
-    function renderArtifacts(state) {
-      const files = state.artifacts && state.artifacts.files ? state.artifacts.files : [];
-      if (!files.length) {
-        qs("artifacts").innerHTML = '<span class="small">No artifacts yet.</span>';
+    function renderBoard(state, trace) {
+      const query = qs("search").value.trim().toLowerCase();
+      const cards = buildCards(state, trace).filter(card => {
+        if (!query) return true;
+        return `${card.title} ${card.body} ${card.agent}`.toLowerCase().includes(query);
+      });
+
+      const grouped = {
+        code: cards.filter(card => card.column === "code"),
+        test: cards.filter(card => card.column === "test"),
+        file: cards.filter(card => card.column === "file"),
+        done: cards.filter(card => card.column === "done"),
+      };
+
+      renderCards("codeCards", grouped.code, "codeCount");
+      renderCards("testCards", grouped.test, "testCount");
+      renderCards("fileCards", grouped.file, "fileCount");
+      renderCards("doneCards", grouped.done, "doneCount");
+      qs("agentCount").textContent = new Set(trace.map(event => event.agent).filter(Boolean)).size;
+      qs("artifactCount").textContent = state && state.artifacts && state.artifacts.files ? state.artifacts.files.length : 0;
+    }
+
+    function buildCards(state, trace) {
+      const cards = [];
+      if (state && state.prompt) {
+        cards.push({
+          column: state.status === "completed" ? "done" : "code",
+          agent: state.profile || "router",
+          tag: state.phase || "queued",
+          title: state.prompt,
+          body: state.requires_confirmation ? "Waiting for profile confirmation before execution." : `Next action: ${state.next_action || "none"}`,
+          live: Boolean(state.active),
+        });
+      }
+
+      (trace || []).forEach((event, index) => {
+        const tool = event.tool || "";
+        const agent = event.agent || "agent";
+        const args = event.args || "";
+        const result = event.result || event.message || event.reason || event.content || "";
+        const eventType = event.event || event.type || "event";
+
+        if (eventType === "tool_call" && (tool === "write_file" || tool === "edit_file")) {
+          cards.push({
+            column: "file",
+            agent,
+            tag: tool,
+            title: extractPath(args) || "File modified",
+            body: result,
+            live: index >= trace.length - 4,
+          });
+        } else if (eventType === "tool_call" && tool === "run_bash" && looksLikeTest(args, result)) {
+          cards.push({
+            column: "test",
+            agent,
+            tag: "test",
+            title: extractCommand(args) || "Test command",
+            body: result,
+            live: index >= trace.length - 4,
+          });
+        } else if (eventType === "tool_call") {
+          cards.push({
+            column: "code",
+            agent,
+            tag: tool || "tool",
+            title: extractCommand(args) || `${tool || "Tool"} call`,
+            body: result,
+            live: index >= trace.length - 4,
+          });
+        } else if (eventType === "finish" || eventType === "context" || eventType === "middleware" || eventType === "error") {
+          cards.push({
+            column: eventType === "error" ? "test" : "done",
+            agent,
+            tag: eventType,
+            title: event.reason || event.type || eventType,
+            body: result || JSON.stringify(event).slice(0, 500),
+            live: index >= trace.length - 4,
+          });
+        }
+      });
+
+      if (state && state.artifacts && state.artifacts.files) {
+        state.artifacts.files.forEach(file => {
+          cards.push({
+            column: "done",
+            agent: "artifact",
+            tag: `${file.size} bytes`,
+            title: file.name,
+            body: `<a href="/api/runs/${state.run_id}/artifact/${encodeURIComponent(file.name)}" target="_blank">Open artifact</a>`,
+            live: false,
+            html: true,
+          });
+        });
+      }
+
+      return cards.slice(-120).reverse();
+    }
+
+    function renderCards(containerId, cards, countId) {
+      qs(countId).textContent = cards.length;
+      if (!cards.length) {
+        qs(containerId).innerHTML = `<div class="task-card"><div class="card-meta">idle</div><h3>No live items yet</h3><p>Agent activity will appear here as soon as the run emits trace events.</p></div>`;
         return;
       }
-      qs("artifacts").innerHTML = files.map(file => {
-        return `<a href="/api/runs/${state.run_id}/artifact/${encodeURIComponent(file.name)}" target="_blank">${escapeHtml(file.name)} · ${file.size} bytes</a>`;
-      }).join("");
+      qs(containerId).innerHTML = cards.map(card => `
+        <div class="task-card ${card.live ? "live" : ""}">
+          <div class="card-meta"><span class="agent-chip">${escapeHtml(card.agent)}</span><span>${escapeHtml(card.tag || "event")}</span></div>
+          <h3>${escapeHtml(String(card.title || "Untitled")).slice(0, 180)}</h3>
+          <p>${card.html ? card.body : escapeHtml(String(card.body || "")).slice(0, 360)}</p>
+          <div class="card-actions"><button class="tiny-btn">Logs</button><button class="tiny-btn">Details</button></div>
+        </div>
+      `).join("");
+    }
+
+    function looksLikeTest(args, result) {
+      const text = `${args} ${result}`.toLowerCase();
+      return ["pytest", "unittest", "npm test", "pnpm test", "yarn test", "playwright", "test ", " tests", "assert", "passed", "failed"].some(term => text.includes(term));
+    }
+
+    function extractPath(args) {
+      const match = String(args).match(/"path"\s*:\s*"([^"]+)"/);
+      return match ? match[1] : "";
+    }
+
+    function extractCommand(args) {
+      const match = String(args).match(/"command"\s*:\s*"([^"]+)"/);
+      return match ? match[1] : "";
     }
 
     function escapeHtml(value) {
-      return value.replace(/[&<>"']/g, ch => ({
+      return String(value).replace(/[&<>"']/g, ch => ({
         "&": "&amp;",
         "<": "&lt;",
         ">": "&gt;",
@@ -396,6 +1221,8 @@
         "'": "&#039;"
       }[ch]));
     }
+
+    renderBoard(null, []);
   </script>
 </body>
 </html>

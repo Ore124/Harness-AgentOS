@@ -88,6 +88,28 @@ def list_artifacts(workspace: str | Path) -> list[dict[str, Any]]:
             "path": str(path),
             "size": path.stat().st_size,
         })
+    known = {item["name"] for item in artifacts}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        rel_name = str(rel)
+        if rel_name in known:
+            continue
+        if rel.parts and rel.parts[0] in {".git", "__pycache__", ".pytest_cache"}:
+            continue
+        if path.name in {"harness_state.json", "analysis.json"} or path.name.startswith(".harness_state.json."):
+            continue
+        if path.name.endswith((".pyc", ".tmp")):
+            continue
+        try:
+            artifacts.append({
+                "name": rel_name,
+                "path": str(path),
+                "size": path.stat().st_size,
+            })
+        except OSError:
+            continue
     return artifacts
 
 

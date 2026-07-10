@@ -11,11 +11,12 @@ from typing import Any, Protocol
 import config
 import tools
 from orchestrator.analytics import analyze_workspace, list_artifacts
-from orchestrator.hooks import HookManager
+from orchestrator.hooks import HookManager, HookResult
 from orchestrator.memory import MemoryStore, VALID_PROFILES
 from orchestrator.router import Router
 from orchestrator.run_context import RunContext
-from orchestrator.state import append_event, load_state, save_state
+from orchestrator.state import append_event, load_state, now_iso, save_state
+from orchestrator.strategy import append_strategy_hints_to_prompt
 
 log = logging.getLogger("harness")
 
@@ -102,6 +103,7 @@ class HarnessPhaseRunner:
             prev_feedback,
             score_history,
         )
+        build_task = append_strategy_hints_to_prompt(build_task, state, "builder")
         harness.builder.run(build_task)
         state["artifacts"] = {"files": list_artifacts(config.WORKSPACE)}
         return state
@@ -112,12 +114,14 @@ class HarnessPhaseRunner:
             state["evaluation_skipped"] = True
             return state
 
-        harness.evaluator.run(
+        eval_task = (
             f"This is evaluation round {state.get('round_num', 1)}.\n"
             f"Read {config.SPEC_FILE} to understand the task.\n"
             f"Examine the work done and test it thoroughly.\n"
             f"Score each criterion honestly. Write your evaluation to {config.FEEDBACK_FILE}."
         )
+        eval_task = append_strategy_hints_to_prompt(eval_task, state, "evaluator")
+        harness.evaluator.run(eval_task)
         tools.stop_dev_server()
 
         feedback_path = Path(config.WORKSPACE) / config.FEEDBACK_FILE
@@ -165,6 +169,11 @@ class Scheduler:
     def step_once(self) -> dict[str, Any]:
         state = load_state(self.state_path)
 
+        if state.get("requires_human_approval") and not state.get("human_approval", {}).get("approved"):
+            state = self._apply_hook_result(state, self.hooks.on_human_approval_required(state))
+            save_state(self.state_path, state)
+            return load_state(self.state_path)
+
         if not state.get("active"):
             self.hooks.on_stall(state, "active flag is false")
             return state
@@ -174,6 +183,11 @@ class Scheduler:
         if not state.get("next_action"):
             self.hooks.on_stall(state, "no next action")
             return state
+
+        state = self._apply_hook_result(state, self.hooks.before_step(state))
+        if state.get("status") in {"paused", "error", "waiting_confirmation", "waiting_approval"}:
+            save_state(self.state_path, state)
+            return load_state(self.state_path)
 
         action = state["next_action"]
         try:
@@ -200,11 +214,13 @@ class Scheduler:
             save_state(self.state_path, state)
             return load_state(self.state_path)
         except Exception as exc:
-            self.hooks.on_error(state, exc)
-            state["status"] = "error"
-            state["active"] = False
-            state["last_error"] = {"type": type(exc).__name__, "message": str(exc)}
-            append_event(state, "scheduler_error", state["last_error"])
+            result = self.hooks.on_error(state, exc)
+            state = self._apply_hook_result(state, result, failed_action=action)
+            if result.action == "continue":
+                state["status"] = "error"
+                state["active"] = False
+                state["last_error"] = {"type": type(exc).__name__, "message": str(exc)}
+            append_event(state, "scheduler_error", state["last_error"] or {"message": str(exc)})
             save_state(self.state_path, state)
             return load_state(self.state_path)
 
@@ -221,12 +237,18 @@ class Scheduler:
 
     def _route(self, state: dict[str, Any]) -> dict[str, Any]:
         from_phase = state.get("phase")
+        append_event(state, "before_route", {"prompt_preview": str(state.get("prompt", ""))[:200]})
+        state = self._apply_hook_result(state, self.hooks.before_route(state))
         append_event(state, "before_transition", {"from": from_phase, "to": "route"})
         self.hooks.before_transition(from_phase, "route", state)
         decision = self.router.route(state["prompt"], state.get("profile"))
         state["route_decision"] = decision.to_dict()
+        state["task_type"] = decision.task_type
         state["memory_refs"] = decision.memory_refs or []
+        state["strategy_hints"] = decision.strategy_hints or []
         append_event(state, "route_decision", state["route_decision"])
+        state = self._apply_hook_result(state, self.hooks.after_route(state))
+        append_event(state, "after_route", state["route_decision"])
 
         if decision.requires_confirmation:
             state["requires_confirmation"] = True
@@ -253,22 +275,35 @@ class Scheduler:
         agent_name: str,
     ) -> dict[str, Any]:
         from_phase = state.get("phase")
+        before_artifacts = list((state.get("artifacts") or {}).get("files", []))
         state["phase"] = phase
         state["status"] = "running"
+        state["phase_started_at"] = now_iso()
         append_event(state, "phase_started", {"phase": phase, "round": state.get("round_num")})
         append_event(state, "before_transition", {"from": from_phase, "to": phase})
         save_state(self.state_path, state)
 
-        self.hooks.before_transition(from_phase, phase, state)
+        state = self._apply_hook_result(state, self.hooks.before_transition(from_phase, phase, state))
         append_event(state, "before_agent_run", {"agent": agent_name, "phase": phase})
         save_state(self.state_path, state)
-        self.hooks.before_agent_run(agent_name, state)
+        state = self._apply_hook_result(state, self.hooks.before_agent_run(agent_name, state))
         state = callback(load_state(self.state_path))
         append_event(state, "after_agent_run", {"agent": agent_name, "phase": phase})
-        self.hooks.after_agent_run(agent_name, state)
+        state = self._apply_hook_result(state, self.hooks.after_agent_run(agent_name, state))
         append_event(state, "phase_completed", {"phase": phase, "round": state.get("round_num")})
         append_event(state, "after_transition", {"from": from_phase, "to": phase})
-        self.hooks.after_transition(from_phase, phase, state)
+        after_artifacts = list((state.get("artifacts") or {}).get("files", []))
+        state = self._apply_hook_result(state, self.hooks.on_artifact_changed(before_artifacts, after_artifacts, state))
+        if state.get("artifact_changes"):
+            append_event(state, "artifact_changed", state["artifact_changes"])
+        if phase == "evaluate" or (phase == "build" and state.get("evaluation_skipped")):
+            analysis = analyze_workspace(state["workspace"])
+            state["analysis"] = analysis
+            state = self._apply_hook_result(state, self.hooks.after_validation(state, analysis))
+            if state.get("validation"):
+                append_event(state, "validation_checked", state["validation"])
+        state = self._apply_hook_result(state, self.hooks.after_transition(from_phase, phase, state))
+        state.pop("phase_started_at", None)
         return state
 
     def _set_next_after_plan(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -290,6 +325,11 @@ class Scheduler:
         return state
 
     def _set_next_after_evaluate(self, state: dict[str, Any]) -> dict[str, Any]:
+        if state.get("evaluation_skipped"):
+            state["phase"] = "analyze"
+            state["next_action"] = "analyze"
+            return state
+
         max_rounds = self._max_rounds(state)
         threshold = self._pass_threshold(state)
         score_history = state.get("score_history", [])
@@ -299,6 +339,9 @@ class Scheduler:
             state["phase"] = "analyze"
             state["next_action"] = "analyze"
         else:
+            state = self._apply_hook_result(state, self.hooks.before_new_round(state))
+            if state.get("status") in {"paused", "error", "waiting_confirmation", "waiting_approval"}:
+                return state
             state["round_num"] = int(state.get("round_num", 1)) + 1
             if self._contract_enabled(state):
                 state["phase"] = "contract"
@@ -319,7 +362,59 @@ class Scheduler:
         state["active"] = False
         append_event(state, "phase_completed", {"phase": "analyze"})
         append_event(state, "run_completed", {"status": "completed"})
-        self.memory.record_run(state, analysis)
+        append_event(state, "before_memory_update", {
+            "profile": state.get("profile"),
+            "status": state.get("status"),
+            "score_history": state.get("score_history", []),
+        })
+        state = self._apply_hook_result(state, self.hooks.before_memory_update(state, analysis))
+        if not state.get("skip_memory_update") and not state.get("memory_update_skipped") and state.get("status") != "paused":
+            self.memory.record_run(state, analysis)
+            state = self._apply_hook_result(state, self.hooks.after_memory_update(state, analysis))
+            append_event(state, "after_memory_update", {
+                "profile": state.get("profile"),
+                "tool_calls": (analysis.get("tool_calls") or {}).get("total", 0),
+            })
+        return state
+
+    def _apply_hook_result(
+        self,
+        state: dict[str, Any],
+        result: HookResult | None,
+        failed_action: str | None = None,
+    ) -> dict[str, Any]:
+        if result is None or result.action == "continue":
+            if result and result.patch:
+                _merge_patch(state, result.patch)
+            return state
+
+        if result.patch:
+            _merge_patch(state, result.patch)
+        append_event(state, "hook_action", {
+            "action": result.action,
+            "reason": result.reason,
+        })
+
+        if result.action == "pause":
+            state["active"] = False
+            state["status"] = "paused"
+        elif result.action == "retry":
+            state["active"] = True
+            state["status"] = "running"
+            state["next_action"] = failed_action or state.get("next_action") or state.get("phase")
+            state["phase_started_at"] = now_iso()
+        elif result.action == "fail":
+            state["active"] = False
+            state["status"] = "error"
+            state["next_action"] = None
+        elif result.action == "require_confirmation":
+            state["active"] = False
+            if state.get("requires_human_approval"):
+                state["status"] = "waiting_approval"
+            else:
+                state["requires_confirmation"] = True
+                state["status"] = "waiting_confirmation"
+            state["next_action"] = None
         return state
 
     def _contract_enabled(self, state: dict[str, Any]) -> bool:
@@ -353,7 +448,24 @@ def confirm_profile(state_path: str | Path, profile: str) -> dict[str, Any]:
     state["status"] = "running"
     state["phase"] = "plan"
     state["next_action"] = "plan"
+    HookManager(state_path).on_profile_confirmed(state, profile)
     append_event(state, "profile_confirmed", {"profile": profile})
+    save_state(state_path, state)
+    return load_state(state_path)
+
+
+def approve_human_action(state_path: str | Path, approved_by: str = "user") -> dict[str, Any]:
+    state = load_state(state_path)
+    approval = dict(state.get("human_approval") or {})
+    approval["approved"] = True
+    approval["approved_by"] = approved_by
+    approval["approved_at"] = now_iso()
+    state["human_approval"] = approval
+    state["requires_human_approval"] = False
+    if state.get("status") == "waiting_approval":
+        state["status"] = "running"
+        state["active"] = True
+    append_event(state, "human_approved", approval)
     save_state(state_path, state)
     return load_state(state_path)
 
@@ -378,3 +490,11 @@ def _parse_start_time(value: str | None) -> float:
         return datetime.fromisoformat(value).timestamp()
     except Exception:
         return time.time()
+
+
+def _merge_patch(state: dict[str, Any], patch: dict[str, Any]) -> None:
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(state.get(key), dict):
+            state[key].update(value)
+        else:
+            state[key] = value
