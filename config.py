@@ -22,8 +22,10 @@ def _load_dotenv():
             continue
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip()
-        # .env takes priority over shell env vars
-        if key:
+        # .env keeps historical priority by default. Benchmark runners can set
+        # HARNESS_DOTENV_OVERRIDE_ENV=0 so per-run env vars control workspace
+        # and feature flags without editing the user's .env file.
+        if key and (os.environ.get("HARNESS_DOTENV_OVERRIDE_ENV", "1") == "1" or key not in os.environ):
             os.environ[key] = value
 
 
@@ -56,6 +58,18 @@ MAX_TOOL_ERRORS = 5           # consecutive tool errors before abort
 # Only enable for models that reliably produce valid parallel tool calls
 # (e.g. Claude, GPT-4o). Disable for models that struggle with it.
 ENABLE_PARALLEL_TOOL_CALLS = os.environ.get("ENABLE_PARALLEL_TOOL_CALLS", "0") == "1"
+
+# --- Optimization feature flags ---
+# Metrics are passive and low-overhead; all behavior-changing optimizations are
+# disabled by default until benchmarked independently.
+HARNESS_METRICS_ENABLED = os.environ.get("HARNESS_METRICS_ENABLED", "1") != "0"
+HARNESS_PROMPT_PREFIX_V2 = os.environ.get("HARNESS_PROMPT_PREFIX_V2", "0") == "1"
+HARNESS_DETERMINISTIC_OUTPUT_COMPRESSION = os.environ.get("HARNESS_DETERMINISTIC_OUTPUT_COMPRESSION", "0") == "1"
+HARNESS_TOOL_CACHE = os.environ.get("HARNESS_TOOL_CACHE", "0") == "1"
+HARNESS_STATE_VECTOR = os.environ.get("HARNESS_STATE_VECTOR", "0") == "1"
+HARNESS_TOKEN_GOVERNOR = os.environ.get("HARNESS_TOKEN_GOVERNOR", "0") == "1"
+HARNESS_PARALLEL_READ_TOOLS = os.environ.get("HARNESS_PARALLEL_READ_TOOLS", "0") == "1"
+HARNESS_EVIDENCE_GUIDED_RECOVERY = os.environ.get("HARNESS_EVIDENCE_GUIDED_RECOVERY", "1") == "1"
 
 # --- Paths ---
 WORKSPACE = os.path.abspath(os.environ.get("HARNESS_WORKSPACE", "./workspace"))

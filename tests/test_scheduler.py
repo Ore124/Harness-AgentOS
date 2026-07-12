@@ -45,6 +45,18 @@ class FailingRunner(FakeRunner):
         raise RuntimeError("build exploded")
 
 
+class LowScoreRunner(FakeRunner):
+    def evaluate(self, state):
+        self.calls.append("evaluate")
+        feedback = Path(state["workspace"]) / "feedback.md"
+        feedback.write_text(
+            "Average: 4/10\nFAILED tests/test_app.py::test_feature - AssertionError\napp.py:3",
+            encoding="utf-8",
+        )
+        state.setdefault("score_history", []).append(4.0)
+        return state
+
+
 class SchedulerTests(unittest.TestCase):
     def test_harness_delegates_to_scheduler(self):
         import harness
@@ -137,6 +149,45 @@ class SchedulerTests(unittest.TestCase):
 
             self.assertEqual(state["validation"]["status"], "verified")
             self.assertIn("score", state["validation"]["evidence"])
+
+    def test_evaluate_failure_records_failure_evidence_for_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_state(tmp, profile="terminal", phase="evaluate", next_action="evaluate")
+            state = load_state(path)
+            state["max_rounds"] = 3
+            save_state(path, state)
+
+            state = Scheduler(path, phase_runner=LowScoreRunner()).step_once()
+
+            evidence = state["current_failure_evidence"]
+            self.assertEqual(state["next_action"], "build")
+            self.assertEqual(state["round_num"], 2)
+            self.assertEqual(evidence["failure_type"], "test_failure")
+            self.assertEqual(evidence["recovery_strategy"], "targeted_fix")
+            self.assertEqual(state["recovery"]["failed_attempt_count"], 1)
+            self.assertEqual(state["recovery"]["recovery_attempt_count"], 1)
+
+    def test_repeated_evaluate_failure_escalates_strategy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_state(tmp, profile="terminal", phase="evaluate", next_action="evaluate")
+            state = load_state(path)
+            state["max_rounds"] = 4
+            save_state(path, state)
+            scheduler = Scheduler(path, phase_runner=LowScoreRunner())
+
+            first = scheduler.step_once()
+            first["phase"] = "evaluate"
+            first["next_action"] = "evaluate"
+            save_state(path, first)
+            second = scheduler.step_once()
+            second["phase"] = "evaluate"
+            second["next_action"] = "evaluate"
+            save_state(path, second)
+            third = scheduler.step_once()
+
+            self.assertEqual(third["current_failure_evidence"]["same_failure_count"], 3)
+            self.assertEqual(third["current_failure_evidence"]["recovery_strategy"], "escalate_analysis")
+            self.assertEqual(third["recovery"]["same_failure_escalation_count"], 1)
 
     def test_human_approval_blocks_and_approval_unblocks(self):
         with tempfile.TemporaryDirectory() as tmp:

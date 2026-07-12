@@ -5,12 +5,20 @@ import logging
 import os
 import subprocess
 import time
+import inspect
 from pathlib import Path
 from typing import Any, Protocol
 
 import config
+import metrics
 import tools
 from orchestrator.analytics import analyze_workspace, list_artifacts
+from orchestrator.failure_evidence import (
+    append_failure_evidence,
+    build_failure_evidence,
+    mark_recovery_attempt,
+    render_retry_context,
+)
 from orchestrator.hooks import HookManager, HookResult
 from orchestrator.memory import MemoryStore, VALID_PROFILES
 from orchestrator.router import Router
@@ -63,10 +71,13 @@ class HarnessPhaseRunner:
         state["time_allocation"] = allocation
 
         if harness.planner and allocation.get("planner_enabled", True):
-            harness.planner.run(
+            _run_agent(
+                harness.planner,
                 f"Create a plan for the following task:\n\n"
                 f"{state['prompt']}\n\n"
-                f"Save the plan to {config.SPEC_FILE}."
+                f"Save the plan to {config.SPEC_FILE}.",
+                run_id=state.get("run_id"),
+                phase="plan",
             )
         else:
             spec_path = Path(config.WORKSPACE) / config.SPEC_FILE
@@ -78,7 +89,11 @@ class HarnessPhaseRunner:
     def contract(self, state: dict[str, Any]) -> dict[str, Any]:
         harness, _profile, _allocation = self._prepare(state)
         if harness.contract_proposer and harness.contract_reviewer:
-            harness._negotiate_contract(state.get("round_num", 1))
+            harness._negotiate_contract(
+                state.get("round_num", 1),
+                run_id=state.get("run_id"),
+                phase="contract",
+            )
         state["artifacts"] = {"files": list_artifacts(config.WORKSPACE)}
         return state
 
@@ -96,6 +111,8 @@ class HarnessPhaseRunner:
 
         feedback_path = Path(config.WORKSPACE) / config.FEEDBACK_FILE
         prev_feedback = feedback_path.read_text(encoding="utf-8", errors="replace") if feedback_path.exists() else ""
+        if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
+            prev_feedback = render_retry_context(state, prev_feedback)
         score_history = [float(s) for s in state.get("score_history", [])]
         build_task = profile.format_build_task(
             state["prompt"],
@@ -104,7 +121,7 @@ class HarnessPhaseRunner:
             score_history,
         )
         build_task = append_strategy_hints_to_prompt(build_task, state, "builder")
-        harness.builder.run(build_task)
+        _run_agent(harness.builder, build_task, run_id=state.get("run_id"), phase="build")
         state["artifacts"] = {"files": list_artifacts(config.WORKSPACE)}
         return state
 
@@ -121,7 +138,7 @@ class HarnessPhaseRunner:
             f"Score each criterion honestly. Write your evaluation to {config.FEEDBACK_FILE}."
         )
         eval_task = append_strategy_hints_to_prompt(eval_task, state, "evaluator")
-        harness.evaluator.run(eval_task)
+        _run_agent(harness.evaluator, eval_task, run_id=state.get("run_id"), phase="evaluate")
         tools.stop_dev_server()
 
         feedback_path = Path(config.WORKSPACE) / config.FEEDBACK_FILE
@@ -214,8 +231,20 @@ class Scheduler:
             save_state(self.state_path, state)
             return load_state(self.state_path)
         except Exception as exc:
+            if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
+                evidence = build_failure_evidence(
+                    state,
+                    phase=action,
+                    error=exc,
+                    retry_goal=f"Recover from {action} failure and continue the original task.",
+                )
+                state = append_failure_evidence(state, evidence)
+                metrics.RECORDER.record_failure_evidence(evidence, recovery_attempt_planned=False)
             result = self.hooks.on_error(state, exc)
             state = self._apply_hook_result(state, result, failed_action=action)
+            if result.action == "retry" and config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
+                state = mark_recovery_attempt(state)
+                metrics.RECORDER.record_recovery_attempt()
             if result.action == "continue":
                 state["status"] = "error"
                 state["active"] = False
@@ -233,7 +262,9 @@ class Scheduler:
                 return state
             if not state.get("active") or not state.get("next_action") or state.get("requires_confirmation"):
                 return state
+            sleep_started = time.perf_counter()
             time.sleep(poll_interval)
+            metrics.RECORDER.add_latency("explicit_sleep_polling_ms", int((time.perf_counter() - sleep_started) * 1000))
 
     def _route(self, state: dict[str, Any]) -> dict[str, Any]:
         from_phase = state.get("phase")
@@ -275,7 +306,10 @@ class Scheduler:
         agent_name: str,
     ) -> dict[str, Any]:
         from_phase = state.get("phase")
+        transition_started = time.perf_counter()
         before_artifacts = list((state.get("artifacts") or {}).get("files", []))
+        metrics.RECORDER.start_run(state["run_id"], state["workspace"], state.get("profile"))
+        metrics.RECORDER.start_phase(phase)
         state["phase"] = phase
         state["status"] = "running"
         state["phase_started_at"] = now_iso()
@@ -287,7 +321,9 @@ class Scheduler:
         append_event(state, "before_agent_run", {"agent": agent_name, "phase": phase})
         save_state(self.state_path, state)
         state = self._apply_hook_result(state, self.hooks.before_agent_run(agent_name, state))
+        metrics.RECORDER.add_latency("scheduler_state_transitions_ms", int((time.perf_counter() - transition_started) * 1000))
         state = callback(load_state(self.state_path))
+        transition_started = time.perf_counter()
         append_event(state, "after_agent_run", {"agent": agent_name, "phase": phase})
         state = self._apply_hook_result(state, self.hooks.after_agent_run(agent_name, state))
         append_event(state, "phase_completed", {"phase": phase, "round": state.get("round_num")})
@@ -304,6 +340,9 @@ class Scheduler:
                 append_event(state, "validation_checked", state["validation"])
         state = self._apply_hook_result(state, self.hooks.after_transition(from_phase, phase, state))
         state.pop("phase_started_at", None)
+        metrics.RECORDER.record_phase_progress(phase, True)
+        metrics.RECORDER.add_latency("scheduler_state_transitions_ms", int((time.perf_counter() - transition_started) * 1000))
+        metrics.RECORDER.end_phase(phase)
         return state
 
     def _set_next_after_plan(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -336,12 +375,28 @@ class Scheduler:
         score = float(score_history[-1]) if score_history else 0.0
 
         if score >= threshold or int(state.get("round_num", 1)) >= max_rounds:
+            if score < threshold:
+                if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
+                    state = self._record_round_failure_evidence(
+                        state,
+                        retry_planned=False,
+                        retry_goal="Analyze final failure after exhausting available rounds.",
+                    )
             state["phase"] = "analyze"
             state["next_action"] = "analyze"
         else:
+            if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
+                state = self._record_round_failure_evidence(
+                    state,
+                    retry_planned=True,
+                    retry_goal="Repair the current failed checks, then rerun focused verification.",
+                )
             state = self._apply_hook_result(state, self.hooks.before_new_round(state))
             if state.get("status") in {"paused", "error", "waiting_confirmation", "waiting_approval"}:
                 return state
+            if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
+                state = mark_recovery_attempt(state)
+                metrics.RECORDER.record_recovery_attempt()
             state["round_num"] = int(state.get("round_num", 1)) + 1
             if self._contract_enabled(state):
                 state["phase"] = "contract"
@@ -360,6 +415,7 @@ class Scheduler:
         state["next_action"] = None
         state["status"] = "completed"
         state["active"] = False
+        metrics.RECORDER.record_status_change(True)
         append_event(state, "phase_completed", {"phase": "analyze"})
         append_event(state, "run_completed", {"status": "completed"})
         append_event(state, "before_memory_update", {
@@ -375,6 +431,41 @@ class Scheduler:
                 "profile": state.get("profile"),
                 "tool_calls": (analysis.get("tool_calls") or {}).get("total", 0),
             })
+        scores = state.get("score_history") or []
+        task_success = bool(scores and float(scores[-1]) >= self._pass_threshold(state))
+        if not scores:
+            task_success = state.get("status") == "completed"
+        verification_success = (state.get("validation") or {}).get("status") == "verified"
+        metrics.RECORDER.record_recovery_result(task_success=task_success)
+        metrics.RECORDER.finish_run(
+            task_success=task_success,
+            verification_success=verification_success,
+        )
+        return state
+
+    def _record_round_failure_evidence(
+        self,
+        state: dict[str, Any],
+        *,
+        retry_planned: bool,
+        retry_goal: str,
+    ) -> dict[str, Any]:
+        feedback_path = Path(state["workspace"]) / config.FEEDBACK_FILE
+        feedback_text = feedback_path.read_text(encoding="utf-8", errors="replace") if feedback_path.exists() else ""
+        evidence = build_failure_evidence(
+            state,
+            phase="evaluate",
+            feedback_text=feedback_text,
+            retry_goal=retry_goal,
+        )
+        state = append_failure_evidence(state, evidence)
+        metrics.RECORDER.record_failure_evidence(evidence, recovery_attempt_planned=retry_planned)
+        append_event(state, "failure_evidence_recorded", {
+            "failure_type": evidence.get("failure_type"),
+            "failure_signature": evidence.get("failure_signature"),
+            "same_failure_count": evidence.get("same_failure_count"),
+            "recovery_strategy": evidence.get("recovery_strategy"),
+        })
         return state
 
     def _apply_hook_result(
@@ -490,6 +581,21 @@ def _parse_start_time(value: str | None) -> float:
         return datetime.fromisoformat(value).timestamp()
     except Exception:
         return time.time()
+
+
+def _run_agent(agent, task: str, *, run_id: str | None, phase: str | None) -> str:
+    run_method = agent.run
+    signature = inspect.signature(run_method)
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+        return run_method(task, run_id=run_id, phase=phase)
+    if "run_id" in signature.parameters or "phase" in signature.parameters:
+        kwargs = {}
+        if "run_id" in signature.parameters:
+            kwargs["run_id"] = run_id
+        if "phase" in signature.parameters:
+            kwargs["phase"] = phase
+        return run_method(task, **kwargs)
+    return run_method(task)
 
 
 def _merge_patch(state: dict[str, Any], patch: dict[str, Any]) -> None:
