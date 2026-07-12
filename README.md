@@ -48,6 +48,7 @@ Harness AgentOS 关注的是 Agent 运行架构，而不是替代完整的研发
 - 浏览器验证：Playwright Chromium
 - 状态持久化：JSON state file + 本地 SQLite orchestrator store
 - 记忆系统：JSON-backed routing memory + failure-pattern strategy hints
+- 失败恢复：Evidence-Guided Recovery，用结构化失败证据指导下一轮 targeted repair
 - Benchmark 适配：Harbor / Terminal-Bench 2.0 风格任务
 - 测试：Python `unittest`
 
@@ -188,7 +189,7 @@ CLI 的传统路径由 `harness.py` 直接编排。Web Console 和 `--resume` �
 | `profiles/` | 不同任务场景的 Agent prompt、工具集合、评分阈值、时间预算 |
 | `middlewares.py` | 循环检测、退出前验证、时间预算、骨架代码检测、错误指导 |
 | `skills.py` / `skills/` | Skill 注册和任务领域知识目录 |
-| `orchestrator/` | 状态机、路由、记忆、策略提示、分析、hook、路径安全和可恢复运行 |
+| `orchestrator/` | 状态机、路由、记忆、策略提示、失败证据提取、分析、hook、路径安全和可恢复运行 |
 | `web/` | FastAPI 控制台和浏览器端 UI |
 | `benchmarks/` | Harbor / Terminal-Bench 适配 |
 | `tests/` | Profile、Scheduler、Router、Web Server、Memory 等单元测试 |
@@ -235,6 +236,8 @@ workspace/<run_id>/harness_state.json
 - `phase` / `next_action`：当前阶段和下一步动作
 - `round_num`：当前迭代轮次
 - `score_history`：评价分数历史
+- `current_failure_evidence` / `failure_evidence_history`：最近失败证据和同签名失败历史
+- `recovery`：失败次数、恢复尝试、重复失败和升级计数
 - `artifacts`：产物索引
 - `events`：最近状态事件
 - `active` / `status`：是否继续运行和当前状态
@@ -294,6 +297,18 @@ description: One-line description used by the agent to decide when to load it.
 - 通用 Agent 可通过工具按需读取 `SKILL.md`，实现渐进式披露。
 - `terminal` Profile 会根据任务名或工作区路径自动匹配一个最相关 Skill，并注入到 builder 任务中，减少上下文浪费。
 
+## Evidence-Guided Recovery
+
+当 Builder、Evaluator 或验证阶段失败时，Harness AgentOS 默认启用 Evidence-Guided Recovery。它不会新增 Agent，也不会增加额外 LLM 调用，而是从已有 `feedback.md`、trace、异常信息和 git diff 中程序化提取结构化失败证据，并在下一轮重试时给 Builder 提供更聚焦的修复上下文。
+
+结构化证据包含 `failure_type`、稳定的 `failure_signature`、失败检查项、关键错误片段、疑似相关文件、最近变更文件、`retry_goal`、`same_failure_count` 和 `recovery_strategy`。同一失败第一次使用 `targeted_fix`，第二次升级为 `reinspect_assumptions`，第三次及以上升级为 `escalate_analysis`，避免反复执行同一种无效修复路径。
+
+该功能默认开启，可通过环境变量关闭：
+
+```bash
+HARNESS_EVIDENCE_GUIDED_RECOVERY=0
+```
+
 ## Web Console
 
 启动：
@@ -330,6 +345,7 @@ analysis.json           trace 和产物分析
 harness_state.json      状态驱动运行的状态文件
 _trace_<agent>.jsonl    每个 Agent 的结构化事件 trace
 .harness/orchestrator.db 当前 workspace 的状态快照和事件索引
+.harness/metrics.json   token、round、recovery 和 benchmark 汇总指标
 ```
 
 跨运行的默认记忆文件位于项目根目录：
@@ -359,6 +375,7 @@ COMPRESS_THRESHOLD=50000
 RESET_THRESHOLD=100000
 MAX_AGENT_ITERATIONS=500
 ENABLE_PARALLEL_TOOL_CALLS=0
+HARNESS_EVIDENCE_GUIDED_RECOVERY=1
 ```
 
 说明：
@@ -366,6 +383,7 @@ ENABLE_PARALLEL_TOOL_CALLS=0
 - `COMPRESS_THRESHOLD` 达到后会压缩旧上下文。
 - `RESET_THRESHOLD` 达到后会通过 checkpoint 重建上下文。
 - `ENABLE_PARALLEL_TOOL_CALLS` 默认关闭，因为部分模型并行工具调用稳定性较差。
+- `HARNESS_EVIDENCE_GUIDED_RECOVERY` 默认开启；设为 `0` 可回到只依赖普通 feedback 的重试方式。
 
 ## Terminal-Bench / Harbor
 
@@ -385,6 +403,14 @@ harbor run -d "terminal-bench@2.0" ^
 ```bash
 ./run_benchmark_v2.sh
 ```
+
+Evidence-Guided Recovery 也提供本地确定性恢复场景 benchmark，用于比较 baseline 和结构化失败证据重试策略：
+
+```bash
+python benchmarks/run_evidence_recovery_benchmark.py
+```
+
+报告会写入 `benchmark_runs/evidence_recovery_report.json`。
 
 ## 运行测试
 
