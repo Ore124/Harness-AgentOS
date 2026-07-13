@@ -127,6 +127,7 @@ class StrategyHintTests(unittest.TestCase):
 
     def _state(self, tmp):
         return {
+            "run_id": "strategy-test",
             "workspace": tmp,
             "prompt": "Build a browser web app",
             "profile": "app-builder",

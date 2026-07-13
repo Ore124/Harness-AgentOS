@@ -32,6 +32,8 @@ from pathlib import Path
 
 import config
 import tools
+import prompts
+import metrics
 from skills import SkillRegistry
 from profiles import get_profile, list_profiles
 from profiles.base import BaseProfile
@@ -57,6 +59,7 @@ class Harness:
     """
 
     def __init__(self, profile: BaseProfile):
+        init_started = time.perf_counter()
         from agents import Agent
 
         self.profile = profile
@@ -71,13 +74,23 @@ class Harness:
         reviewer_cfg = profile.contract_reviewer()
 
         self.planner = Agent(
-            "planner", planner_cfg.system_prompt + skill_catalog,
+            "planner",
+            prompts.compose_system_prompt(
+                planner_cfg.system_prompt,
+                skill_catalog,
+                prefix_v2=config.HARNESS_PROMPT_PREFIX_V2,
+            ),
             use_tools=True, extra_tool_schemas=planner_cfg.extra_tool_schemas,
             middlewares=planner_cfg.middlewares, time_budget=planner_cfg.time_budget,
         ) if planner_cfg.enabled else None
 
         self.builder = Agent(
-            "builder", builder_cfg.system_prompt + skill_catalog,
+            "builder",
+            prompts.compose_system_prompt(
+                builder_cfg.system_prompt,
+                skill_catalog,
+                prefix_v2=config.HARNESS_PROMPT_PREFIX_V2,
+            ),
             use_tools=True, extra_tool_schemas=builder_cfg.extra_tool_schemas,
             tool_schemas=builder_cfg.tool_schemas,
             middlewares=builder_cfg.middlewares, time_budget=builder_cfg.time_budget,
@@ -92,12 +105,15 @@ class Harness:
         self.contract_proposer = Agent(
             "contract_proposer", proposer_cfg.system_prompt, use_tools=True,
             middlewares=proposer_cfg.middlewares,
+            time_budget=proposer_cfg.time_budget,
         ) if proposer_cfg.enabled else None
 
         self.contract_reviewer = Agent(
             "contract_reviewer", reviewer_cfg.system_prompt, use_tools=True,
             middlewares=reviewer_cfg.middlewares,
+            time_budget=reviewer_cfg.time_budget,
         ) if reviewer_cfg.enabled else None
+        metrics.RECORDER.add_latency("agent_initialization_ms", int((time.perf_counter() - init_started) * 1000))
 
     def run(self, user_prompt: str) -> None:
         """Run through the scheduler while preserving the CLI entry point."""
@@ -193,7 +209,7 @@ class Harness:
                 log.info(f"ROUND {round_num}/{max_rounds}: CONTRACT NEGOTIATION")
                 log.info("=" * 60)
                 contract_start = time.time()
-                self._negotiate_contract(round_num)
+                self._negotiate_contract(round_num, user_prompt=user_prompt)
                 log.info(f"Contract negotiation completed in {time.time() - contract_start:.0f}s")
 
             # ---- Build ----
@@ -265,22 +281,42 @@ class Harness:
         log.info(f"Output in: {config.WORKSPACE}")
         log.info("=" * 60)
 
-    def _negotiate_contract(self, round_num: int, max_iterations: int = 3) -> None:
-        self.contract_proposer.run(
-            f"This is round {round_num}.\n"
-            f"Read spec.md. If feedback.md exists, read it too.\n"
-            f"Propose a sprint contract for this round. Write it to contract.md."
+    def _negotiate_contract(
+        self,
+        round_num: int,
+        max_iterations: int = 1,
+        run_id: str | None = None,
+        phase: str | None = "contract",
+        user_prompt: str | None = None,
+    ) -> None:
+        original_request = (
+            f"\nOriginal user request:\n{user_prompt}\n"
+            "If spec.md conflicts with this request, the original user request wins.\n"
+            if user_prompt else ""
         )
+        proposer_result = self.contract_proposer.run(
+            f"This is round {round_num}.\n"
+            f"{original_request}"
+            f"Read spec.md. If feedback.md exists, read it too.\n"
+            f"Propose a sprint contract for this round. Write it to contract.md.",
+            run_id=run_id,
+            phase=phase,
+        )
+        _require_successful_agent_result(proposer_result, phase or "contract")
 
         for i in range(max_iterations):
             log.info(f"[contract] Review iteration {i + 1}/{max_iterations}")
 
-            self.contract_reviewer.run(
+            reviewer_result = self.contract_reviewer.run(
                 f"Review the sprint contract in contract.md for round {round_num}.\n"
+                f"{original_request}"
                 f"Read spec.md for context. Read feedback.md if it exists.\n"
                 f"If acceptable, write APPROVED at the top and save to contract.md.\n"
-                f"If changes needed, write revision requests and save updated contract."
+                f"If changes needed, write revision requests and save updated contract.",
+                run_id=run_id,
+                phase=phase,
             )
+            _require_successful_agent_result(reviewer_result, phase or "contract")
 
             contract_path = Path(config.WORKSPACE) / "contract.md"
             if contract_path.exists():
@@ -291,11 +327,21 @@ class Harness:
 
             if i < max_iterations - 1:
                 log.info("[contract] Contract needs revision...")
-                self.contract_proposer.run(
-                    f"The reviewer requested changes. Read contract.md and revise."
+                proposer_result = self.contract_proposer.run(
+                    f"The reviewer requested changes.\n{original_request}Read contract.md and revise.",
+                    run_id=run_id,
+                    phase=phase,
                 )
+                _require_successful_agent_result(proposer_result, phase or "contract")
 
         log.warning("[contract] Max iterations reached, proceeding with current contract.")
+
+
+def _require_successful_agent_result(result, phase: str) -> None:
+    """Use Scheduler's failure type while retaining legacy string-agent support."""
+    from orchestrator.scheduler import _require_successful_agent_result as require_result
+
+    require_result(result, phase)
 
 
 # ---------------------------------------------------------------------------

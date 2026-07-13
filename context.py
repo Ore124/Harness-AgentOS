@@ -245,7 +245,9 @@ def create_checkpoint(messages: list[dict], llm_call) -> str:
     ])
 
     # Persist to file
-    progress_path = Path(config.WORKSPACE) / config.PROGRESS_FILE
+    from tools import current_workspace
+
+    progress_path = current_workspace() / config.PROGRESS_FILE
     progress_path.write_text(checkpoint, encoding="utf-8")
     log.info(f"Checkpoint written to {config.PROGRESS_FILE}")
 
@@ -260,10 +262,12 @@ def restore_from_checkpoint(checkpoint: str, system_prompt: str) -> list[dict]:
     # Get recent code changes for extra context
     git_context = ""
     try:
+        from tools import current_workspace
+
         result = subprocess.run(
             "git diff --stat HEAD~5 2>/dev/null || git log --oneline -5 2>/dev/null",
             shell=True,
-            cwd=config.WORKSPACE,
+            cwd=current_workspace(),
             capture_output=True,
             text=True,
             timeout=10,

@@ -183,12 +183,14 @@ def _contains_failure_marker(text: str) -> bool:
         "modulenotfounderror",
         "timeout",
         "timed out",
+        "time_budget",
+        "time budget",
     ])
 
 
 def _classify_failure(primary: str, snippets: list[str], phase: str | None) -> str:
     text = "\n".join([primary, *snippets]).lower()
-    if "timed out" in text or "timeout" in text:
+    if "timed out" in text or "timeout" in text or "time_budget" in text or "time budget" in text:
         return "timeout"
     if "syntaxerror" in text or "parse error" in text or "unexpected token" in text:
         return "syntax_error"

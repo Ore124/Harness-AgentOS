@@ -97,13 +97,12 @@ class TerminalProfile(BaseProfile):
 
     def _lookup_task_meta(self, user_prompt: str) -> dict | None:
         """Look up full TB2 task metadata (timeout, difficulty, category)."""
-        import config as _cfg
         tasks = self._load_tb2_tasks()
         if not tasks:
             return None
 
         # Check workspace path first (most reliable)
-        ws_lower = _cfg.WORKSPACE.lower()
+        ws_lower = str(_tools.current_workspace()).lower()
         for task_name, meta in tasks.items():
             if task_name in ws_lower:
                 return meta
@@ -325,12 +324,12 @@ Use write_file to save to feedback.md, then stop.
         """Streamlined task prompt — minimal overhead, maximum signal."""
         env_section = ""
         if round_num == 1:
-            import subprocess, config as _cfg
+            import subprocess
             env_lines = []
             for cmd in ENV_BOOTSTRAP_COMMANDS:
                 try:
                     r = subprocess.run(
-                        cmd, shell=True, cwd=_cfg.WORKSPACE,
+                        cmd, shell=True, cwd=_tools.current_workspace(),
                         capture_output=True, text=True, timeout=10,
                     )
                     out = (r.stdout + r.stderr).strip()
@@ -382,14 +381,13 @@ Use write_file to save to feedback.md, then stop.
         Returns the skill content wrapped in a section header, or empty string.
         Only injects ONE skill to avoid context bloat.
         """
-        import config as _cfg
         from pathlib import Path
 
         skills_dir = Path(__file__).parent.parent / "skills"
         if not skills_dir.is_dir():
             return ""
 
-        ws_lower = _cfg.WORKSPACE.lower()
+        ws_lower = str(_tools.current_workspace()).lower()
         prompt_lower = user_prompt.lower()
 
         # Sort skills by name length DESCENDING so longer (more specific) names

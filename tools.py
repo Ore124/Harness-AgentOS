@@ -8,10 +8,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import signal
+import shutil
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from contextvars import ContextVar, Token
 from pathlib import Path
 
 import config
+from orchestrator.canonical_trace import emit_event
 from orchestrator.path_safety import WorkspacePathError, resolve_workspace_path
 from orchestrator.run_context import RunContext
 
@@ -26,10 +33,43 @@ except ImportError:
 # Helpers
 # ---------------------------------------------------------------------------
 
+_WORKSPACE: ContextVar[Path | None] = ContextVar("harness_workspace", default=None)
+_RUN_ID: ContextVar[str | None] = ContextVar("harness_run_id", default=None)
+
+
+def current_workspace() -> Path:
+    """Return the workspace for this run, with the legacy global as a fallback."""
+    return _WORKSPACE.get() or Path(config.WORKSPACE).resolve()
+
+
+def activate_workspace(workspace: Path) -> Token[Path | None]:
+    """Install a workspace for the current execution context."""
+    return _WORKSPACE.set(Path(workspace).resolve())
+
+
+def reset_workspace(token: Token[Path | None]) -> None:
+    """Restore the workspace that was active before ``activate_workspace``."""
+    _WORKSPACE.reset(token)
+
+
+def activate_run_id(run_id: str) -> Token[str | None]:
+    """Install the owning run id for processes started in this context."""
+    return _RUN_ID.set(str(run_id))
+
+
+def reset_run_id(token: Token[str | None]) -> None:
+    """Restore the run id active before ``activate_run_id``."""
+    _RUN_ID.reset(token)
+
+
+def current_run_id() -> str | None:
+    """Return the active run id, if execution is inside a scheduler run."""
+    return _RUN_ID.get()
+
 def _resolve(path: str) -> Path:
     """Resolve a relative path inside the workspace. Prevent escaping."""
     try:
-        return resolve_workspace_path(config.WORKSPACE, path)
+        return resolve_workspace_path(current_workspace(), path)
     except WorkspacePathError as exc:
         raise ValueError(str(exc)) from exc
 
@@ -45,10 +85,17 @@ def resolve_for_context(ctx: RunContext, path: str) -> Path:
 # Tool implementations
 # ---------------------------------------------------------------------------
 
+_background_procs: list[subprocess.Popen] = []
+_processes_by_run: dict[str, list[subprocess.Popen]] = {}
+_dev_server_procs_by_run: dict[str, subprocess.Popen] = {}
+
 def read_file(path: str) -> str:
     p = _resolve(path)
     if not p.exists():
         return f"[error] File not found: {path}"
+    binary_error = _binary_file_error(p, path)
+    if binary_error:
+        return binary_error
     content = p.read_text(encoding="utf-8", errors="replace")
     limit = 40_000
     if len(content) > limit:
@@ -58,6 +105,48 @@ def read_file(path: str) -> str:
             f"Use run_bash with head/tail/sed to read the rest."
         )
     return content
+
+
+_BINARY_READ_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
+    ".pdf", ".zip", ".gz", ".tar", ".7z", ".rar",
+    ".exe", ".dll", ".bin", ".wasm", ".pyc",
+}
+
+
+def _binary_file_error(resolved_path: Path, display_path: str) -> str | None:
+    suffix = resolved_path.suffix.lower()
+    if suffix in _BINARY_READ_EXTENSIONS:
+        size = _safe_file_size(resolved_path)
+        kind = "image" if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"} else "binary"
+        hint = " Use the browser_test text report or visual inspection tooling instead." if kind == "image" else ""
+        return f"[error] Refusing to read {kind} file as text: {display_path} ({size} bytes).{hint}"
+
+    try:
+        sample = resolved_path.read_bytes()[:4096]
+    except OSError as exc:
+        return f"[error] Could not read file: {display_path}: {exc}"
+    if _looks_binary(sample):
+        size = _safe_file_size(resolved_path)
+        return f"[error] Refusing to read binary file as text: {display_path} ({size} bytes)."
+    return None
+
+
+def _safe_file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _looks_binary(sample: bytes) -> bool:
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return True
+    text_controls = {7, 8, 9, 10, 12, 13, 27}
+    suspicious = sum(1 for byte in sample if byte < 32 and byte not in text_controls)
+    return suspicious / len(sample) > 0.02
 
 
 def read_skill_file(path: str) -> str:
@@ -79,6 +168,7 @@ def write_file(path: str, content: str) -> str:
     p = _resolve(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
+    _emit_runtime_event("workspace_mutated", {"tool": "write_file", "path": path})
     return f"Wrote {len(content)} chars to {path}"
 
 
@@ -90,6 +180,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
             # Creating a new file
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(new_string, encoding="utf-8")
+            _emit_runtime_event("workspace_mutated", {"tool": "edit_file", "path": path})
             return f"Created new file {path} ({len(new_string)} chars)"
         return f"[error] File not found: {path}"
 
@@ -119,6 +210,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
 
     new_content = content.replace(old_string, new_string, 1)
     p.write_text(new_content, encoding="utf-8")
+    _emit_runtime_event("workspace_mutated", {"tool": "edit_file", "path": path})
     return f"Edited {path}: replaced {len(old_string)} chars with {len(new_string)} chars"
 
 
@@ -129,7 +221,7 @@ def list_files(directory: str = ".") -> str:
     entries = []
     for item in sorted(p.rglob("*")):
         if item.is_file():
-            rel = item.relative_to(Path(config.WORKSPACE).resolve())
+            rel = item.relative_to(current_workspace())
             entries.append(str(rel))
     if not entries:
         return "(empty)"
@@ -138,21 +230,42 @@ def list_files(directory: str = ".") -> str:
 
 def run_bash(command: str, timeout: int = 120) -> str:
     """Run a shell command inside the workspace. Returns stdout+stderr."""
+    unsafe_message = _unsafe_process_kill_error(command)
+    if unsafe_message:
+        return unsafe_message
+
+    command, run_in_background = _split_background_command(command)
+    if run_in_background or _looks_like_long_running_server(command):
+        return _start_background_command(command)
+
+    proc: subprocess.Popen | None = None
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=config.WORKSPACE,
-            capture_output=True,
+        popen_args, use_shell = _shell_invocation(command)
+        proc = subprocess.Popen(
+            popen_args,
+            shell=use_shell,
+            cwd=current_workspace(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+            **_process_group_kwargs(),
         )
-        output = _smart_truncate_output(result.stdout, result.stderr)
+        _register_process(proc)
+        _emit_runtime_event("managed_process_started", {"pid": proc.pid, "command": command})
+        stdout, stderr = proc.communicate(timeout=timeout)
+        output = _smart_truncate_output(stdout, stderr)
         # Prepend exit code for non-zero returns — helps weak models detect failures
-        if result.returncode != 0:
-            output = f"[exit code: {result.returncode}]\n{output}"
+        if proc.returncode != 0:
+            output = f"[exit code: {proc.returncode}]\n{output}"
+        if use_shell and not _bash_executable():
+            output = (output or "") + _missing_bash_hint()
         return output or "(no output)"
     except subprocess.TimeoutExpired:
+        if proc is not None:
+            _terminate_process_tree(proc)
         return (
             f"[error] Command timed out after {timeout}s. "
             f"If this command legitimately needs more time (e.g. compilation, training), "
@@ -160,6 +273,254 @@ def run_bash(command: str, timeout: int = 120) -> str:
         )
     except Exception as e:
         return f"[error] {e}"
+
+    finally:
+        if proc is not None:
+            _unregister_process(proc)
+
+
+def _shell_invocation(command: str) -> tuple[list[str] | str, bool]:
+    bash = _bash_executable()
+    if bash:
+        return [bash, "-lc", command], False
+    return command, True
+
+
+def _bash_executable() -> str | None:
+    if os.name == "nt":
+        for candidate in _windows_bash_candidates():
+            if candidate.exists():
+                return str(candidate)
+        path_bash = shutil.which("bash")
+        if path_bash and not _is_windows_wsl_bash(Path(path_bash)):
+            return path_bash
+        return None
+
+    return shutil.which("bash") or shutil.which("sh")
+
+
+def _windows_bash_candidates() -> list[Path]:
+    return [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "bash.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git" / "bin" / "bash.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git" / "usr" / "bin" / "bash.exe",
+    ]
+
+
+def _is_windows_wsl_bash(path: Path) -> bool:
+    normalized = str(path).lower().replace("/", "\\")
+    return (
+        normalized.endswith(r"\windows\system32\bash.exe")
+        or r"\appdata\local\microsoft\windowsapps\bash.exe" in normalized
+    )
+
+
+def _missing_bash_hint() -> str:
+    if os.name != "nt":
+        return ""
+    return (
+        "\n[warning] No Git Bash/MSYS bash executable was found, so run_bash "
+        "fell back to the Windows shell. Install Git for Windows or put a real "
+        "bash.exe on PATH for full bash command compatibility."
+    )
+
+
+def _unsafe_process_kill_error(command: str) -> str | None:
+    """Reject broad process kills that can terminate the harness runtime."""
+    import re
+
+    normalized = " ".join(command.strip().split()).lower()
+    if not normalized:
+        return None
+
+    segments = [segment.strip() for segment in re.split(r"[;&|]+", normalized)]
+    python_process = r'"?python(?:\d+(?:\.\d+)?)?(?:\.exe)?"?'
+
+    for segment in segments:
+        if not segment:
+            continue
+        words = _shell_words(segment)
+        command_name = _direct_command_name(words)
+        if command_name == "taskkill" and re.search(rf"(^|\s)/im\s+{python_process}(\s|$)", segment):
+            return _unsafe_process_kill_message()
+        if command_name == "pkill" and re.search(r"(^|\s)-f(\s|$)", segment) and "python" in segment:
+            return _unsafe_process_kill_message()
+        if command_name == "pkill" and re.search(rf"(^|\s){python_process}(\s|$)", segment):
+            return _unsafe_process_kill_message()
+        if command_name == "killall" and re.search(rf"(^|\s){python_process}(\s|$)", segment):
+            return _unsafe_process_kill_message()
+
+    return None
+
+
+def _shell_words(command: str) -> list[str]:
+    import shlex
+
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def _direct_command_name(words: list[str]) -> str:
+    while words and words[0] in {"sudo", "command"}:
+        words = words[1:]
+    if not words:
+        return ""
+    return Path(words[0]).name
+
+
+def _unsafe_process_kill_message() -> str:
+    return (
+        "[error] Refusing to run broad Python process-kill command because it "
+        "could terminate the harness, agent runtime, or local Python services. "
+        "Use stop_background_commands for processes started by run_bash, or "
+        "kill a specific PID instead."
+    )
+
+
+def _split_background_command(command: str) -> tuple[str, bool]:
+    """Return command without a trailing shell background marker.
+
+    Agents often use Unix-style `&` for long-running dev servers. On Windows
+    cmd.exe treats that as a command separator, so subprocess.run waits forever
+    on the server process until the tool timeout. Treat a final single `&` as
+    a portable request to run the command in the background.
+    """
+    stripped = command.rstrip()
+    if not stripped.endswith("&") or stripped.endswith("&&"):
+        return command, False
+    return stripped[:-1].rstrip(), True
+
+
+def _looks_like_long_running_server(command: str) -> bool:
+    normalized = " ".join(command.strip().split()).lower()
+    return (
+        normalized.startswith("python -m http.server")
+        or normalized.startswith("python3 -m http.server")
+        or normalized.startswith("py -m http.server")
+    )
+
+
+def _start_background_command(command: str) -> str:
+    if not command:
+        return "[error] Empty background command"
+    try:
+        popen_args, use_shell = _shell_invocation(command)
+        proc = subprocess.Popen(
+            popen_args,
+            shell=use_shell,
+            cwd=current_workspace(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **_process_group_kwargs(),
+        )
+        time.sleep(0.5)
+        returncode = proc.poll()
+        if returncode is not None:
+            return f"[exit code: {returncode}]\nBackground command exited immediately."
+        _register_process(proc)
+        _emit_runtime_event("managed_process_started", {"pid": proc.pid, "command": command})
+        return f"Started background command (pid={proc.pid})"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+def stop_background_commands() -> str:
+    """Stop only commands owned by the current run (or legacy callers)."""
+    run_id = current_run_id()
+    if run_id:
+        return cleanup_run_processes(run_id)
+
+    stopped = 0
+    while _background_procs:
+        proc = _background_procs.pop()
+        if proc.poll() is not None:
+            continue
+        _terminate_process_tree(proc)
+        stopped += 1
+        _emit_runtime_event("managed_process_stopped", {"pid": proc.pid})
+    return f"Stopped {stopped} background command(s)"
+
+
+def cleanup_run_processes(run_id: str) -> str:
+    """Terminate only live process trees registered to ``run_id``."""
+    processes = _processes_by_run.pop(str(run_id), [])
+    _dev_server_procs_by_run.pop(str(run_id), None)
+    stopped = 0
+    for proc in processes:
+        if proc.poll() is not None:
+            continue
+        _terminate_process_tree(proc)
+        stopped += 1
+        _emit_runtime_event("managed_process_stopped", {"pid": proc.pid})
+    _emit_runtime_event("managed_process_cleanup", {"run_id": str(run_id), "stopped": stopped})
+    return f"Stopped {stopped} process(es) for run {run_id}"
+
+
+def _register_process(proc: subprocess.Popen) -> None:
+    """Register a process under the active run without inspecting other PIDs."""
+    run_id = current_run_id()
+    if run_id is None:
+        _background_procs.append(proc)
+        return
+    _processes_by_run.setdefault(run_id, []).append(proc)
+
+
+def _emit_runtime_event(event_type: str, payload: dict) -> None:
+    run_id = current_run_id()
+    if run_id:
+        emit_event(current_workspace(), run_id, event_type, payload)
+
+
+def _unregister_process(proc: subprocess.Popen) -> None:
+    """Remove a completed foreground process without touching any other process."""
+    run_id = current_run_id()
+    if run_id is None:
+        return
+    processes = _processes_by_run.get(run_id)
+    if not processes:
+        return
+    try:
+        processes.remove(proc)
+    except ValueError:
+        return
+    if not processes:
+        _processes_by_run.pop(run_id, None)
+
+
+def _process_group_kwargs() -> dict:
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _terminate_process_tree(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        return
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 
 def _smart_truncate_output(stdout: str, stderr: str, limit: int = 20_000) -> str:
@@ -294,34 +655,42 @@ _dev_server_proc: subprocess.Popen | None = None
 def _ensure_dev_server(start_command: str, port: int, startup_wait: int = 8) -> str:
     """Start a dev server in the background if not already running."""
     global _dev_server_proc
-    if _dev_server_proc is not None and _dev_server_proc.poll() is None:
-        return f"Dev server already running (pid={_dev_server_proc.pid})"
-    _dev_server_proc = subprocess.Popen(
+    run_id = current_run_id()
+    existing = _dev_server_procs_by_run.get(run_id) if run_id else _dev_server_proc
+    if existing is not None and existing.poll() is None:
+        return f"Dev server already running (pid={existing.pid})"
+    proc = subprocess.Popen(
         start_command,
         shell=True,
-        cwd=config.WORKSPACE,
+        cwd=current_workspace(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        **_process_group_kwargs(),
     )
+    if run_id:
+        _dev_server_procs_by_run[run_id] = proc
+        _register_process(proc)
+    else:
+        _dev_server_proc = proc
     time.sleep(startup_wait)
-    if _dev_server_proc.poll() is not None:
-        stderr = _dev_server_proc.stderr.read().decode(errors="replace")[:2000]
+    if proc.poll() is not None:
+        stderr = proc.stderr.read().decode(errors="replace")[:2000]
         return f"[error] Dev server exited immediately: {stderr}"
-    return f"Dev server started (pid={_dev_server_proc.pid}, port={port})"
+    return f"Dev server started (pid={proc.pid}, port={port})"
 
 
 def stop_dev_server() -> str:
     """Stop the background dev server."""
     global _dev_server_proc
+    run_id = current_run_id()
+    if run_id:
+        return cleanup_run_processes(run_id)
+    background_result = stop_background_commands()
     if _dev_server_proc is None:
-        return "No dev server running"
-    _dev_server_proc.terminate()
-    try:
-        _dev_server_proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        _dev_server_proc.kill()
+        return f"No dev server running\n{background_result}"
+    _terminate_process_tree(_dev_server_proc)
     _dev_server_proc = None
-    return "Dev server stopped"
+    return f"Dev server stopped\n{background_result}"
 
 
 def browser_test(
@@ -356,10 +725,39 @@ def browser_test(
     if start_command:
         srv_result = _ensure_dev_server(start_command, port, startup_wait)
         report_lines.append(f"Server: {srv_result}")
+        if srv_result.startswith("[error]"):
+            return "\n".join(report_lines)
+
+    preflight_error = _preflight_http_url(url)
+    if preflight_error:
+        if not start_command:
+            auto_start = _auto_start_static_server_for_url(url, startup_wait=min(startup_wait, 2))
+            if auto_start:
+                report_lines.append(f"Server: {auto_start}")
+                preflight_error = _preflight_http_url(url)
+        if preflight_error:
+            report_lines.append(preflight_error)
+            return "\n".join(report_lines)
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            try:
+                browser = p.chromium.launch(headless=True)
+            except Exception as launch_error:
+                browser = None
+                fallback_errors = []
+                for channel in ("msedge", "chrome"):
+                    try:
+                        browser = p.chromium.launch(channel=channel, headless=True)
+                        report_lines.append(f"Browser: using system {channel} fallback")
+                        break
+                    except Exception as fallback_error:
+                        fallback_errors.append(f"{channel}: {fallback_error}")
+                if browser is None:
+                    report_lines.append(f"[error] Chromium launch failed: {launch_error}")
+                    for fallback_error in fallback_errors:
+                        report_lines.append(f"[error] Fallback launch failed: {fallback_error[:300]}")
+                    return "\n".join(report_lines)
             page = browser.new_page(viewport={"width": 1280, "height": 720})
 
             # Navigate
@@ -416,7 +814,7 @@ def browser_test(
 
             # Screenshot
             if screenshot:
-                ss_path = Path(config.WORKSPACE) / "_screenshot.png"
+                ss_path = current_workspace() / "_screenshot.png"
                 page.screenshot(path=str(ss_path), full_page=False)
                 report_lines.append(f"Screenshot saved to _screenshot.png")
 
@@ -426,6 +824,59 @@ def browser_test(
         report_lines.append(f"[error] Browser test failed: {e}")
 
     return "\n".join(report_lines)
+
+
+def _preflight_http_url(url: str, timeout: float = 2.0) -> str | None:
+    """Fail fast when the target HTTP server or page is unavailable."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    try:
+        request = urllib.request.Request(url, method="GET", headers={"User-Agent": "HarnessBrowserPreflight/1.0"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response.read(1)
+        return None
+    except urllib.error.HTTPError:
+        # The server is reachable. Let Playwright load the page so the
+        # evaluator can inspect the actual browser-visible error page.
+        return None
+    except urllib.error.URLError as exc:
+        return (
+            f"[error] Browser preflight failed: cannot reach {url} within {timeout:g}s "
+            f"({exc.reason}). Start the dev server with start_command or use the correct port."
+        )
+    except TimeoutError:
+        return (
+            f"[error] Browser preflight failed: cannot reach {url} within {timeout:g}s. "
+            "Start the dev server with start_command or use the correct port."
+        )
+    except Exception as exc:
+        return f"[error] Browser preflight failed before Playwright navigation: {exc}"
+
+
+def _auto_start_static_server_for_url(url: str, startup_wait: int = 2) -> str | None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1"}:
+        return None
+
+    target = _static_file_for_url(parsed)
+    if target is None or not target.exists() or not target.is_file():
+        return None
+
+    server_port = parsed.port or 8000
+    return _ensure_dev_server(f"python -m http.server {server_port}", server_port, startup_wait)
+
+
+def _static_file_for_url(parsed_url) -> Path | None:
+    raw_path = urllib.parse.unquote(parsed_url.path or "/")
+    relative_path = "index.html" if raw_path in {"", "/"} else raw_path.lstrip("/")
+    if not relative_path or relative_path.startswith(("../", "..\\")):
+        return None
+    try:
+        return _resolve(relative_path)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -957,7 +1408,7 @@ def execute_tool(name: str, arguments: dict) -> str:
 
     # Claude Code pattern: persist large tool results to disk
     if isinstance(result, str) and len(result) > 50_000 and name == "run_bash":
-        persisted_path = Path(config.WORKSPACE) / f"_tool_output_{name}.txt"
+        persisted_path = current_workspace() / f"_tool_output_{name}.txt"
         try:
             persisted_path.write_text(result, encoding="utf-8")
             preview = result[:2000]

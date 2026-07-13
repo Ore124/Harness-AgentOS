@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 
 @dataclass(frozen=True)
@@ -21,3 +23,17 @@ class RunContext:
             trace_dir=workspace / ".harness" / "traces",
             allow_terminal=allow_terminal,
         )
+
+    @contextmanager
+    def activate(self) -> Iterator["RunContext"]:
+        """Make this run's workspace available to tools in the current context."""
+        # Import lazily because tools exposes helpers that also accept RunContext.
+        import tools
+
+        workspace_token = tools.activate_workspace(self.workspace)
+        run_token = tools.activate_run_id(self.run_id)
+        try:
+            yield self
+        finally:
+            tools.reset_run_id(run_token)
+            tools.reset_workspace(workspace_token)

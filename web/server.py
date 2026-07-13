@@ -49,8 +49,15 @@ class TerminalRunRequest(BaseModel):
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+def index() -> HTMLResponse:
+    return HTMLResponse(
+        content=(STATIC_DIR / "index.html").read_text(encoding="utf-8"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.post("/api/runs")
@@ -88,7 +95,7 @@ def list_runs() -> dict[str, Any]:
             try:
                 state = load_state(state_path)
                 runs.append({
-                    "run_id": state["run_id"],
+                    "run_id": state_path.parent.name,
                     "prompt": state["prompt"],
                     "profile": state["profile"],
                     "status": state["status"],
@@ -102,12 +109,13 @@ def list_runs() -> dict[str, Any]:
 
 @app.get("/api/runs/{run_id}")
 def get_run(run_id: str) -> dict[str, Any]:
-    return load_state(_state_path(run_id))
+    return _load_api_state(run_id)
 
 
 @app.post("/api/runs/{run_id}/confirm-profile")
 def confirm_run_profile(run_id: str, request: ConfirmProfileRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     state = confirm_profile(_state_path(run_id), request.profile)
+    state["run_id"] = run_id
     background_tasks.add_task(start_worker, run_id)
     return state
 
@@ -115,6 +123,7 @@ def confirm_run_profile(run_id: str, request: ConfirmProfileRequest, background_
 @app.post("/api/runs/{run_id}/resume")
 def resume_run(run_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
     state = set_active(_state_path(run_id), True)
+    state["run_id"] = run_id
     background_tasks.add_task(start_worker, run_id)
     return state
 
@@ -122,13 +131,16 @@ def resume_run(run_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
 @app.post("/api/runs/{run_id}/approve")
 def approve_run(run_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
     state = approve_human_action(_state_path(run_id))
+    state["run_id"] = run_id
     background_tasks.add_task(start_worker, run_id)
     return state
 
 
 @app.post("/api/runs/{run_id}/pause")
 def pause_run(run_id: str) -> dict[str, Any]:
-    return set_active(_state_path(run_id), False)
+    state = set_active(_state_path(run_id), False)
+    state["run_id"] = run_id
+    return state
 
 
 @app.get("/api/runs/{run_id}/artifact/{name}")
@@ -233,6 +245,7 @@ def run_terminal_command(payload: TerminalRunRequest, request: Request) -> dict[
 async def run_events(run_id: str):
     async def stream():
         last_event_id = 0
+        last_snapshot_key = None
         while True:
             try:
                 store = _store_for_run(run_id)
@@ -240,6 +253,15 @@ async def run_events(run_id: str):
                 for event in events:
                     last_event_id = max(last_event_id, int(event["_event_id"]))
                     yield f"event: message\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+                state = _load_api_state(run_id)
+                trace = _tail_traces(Path(state["workspace"]).resolve())
+                trace_key = trace[-1].get("t") if trace else None
+                snapshot_key = (state.get("updated_at"), state.get("last_event_at"), len(trace), trace_key)
+                if snapshot_key != last_snapshot_key:
+                    last_snapshot_key = snapshot_key
+                    update_payload = json.dumps({"state": state, "trace": trace}, ensure_ascii=False)
+                    yield f"event: update\ndata: {update_payload}\n\n"
                 await asyncio.sleep(1)
             except asyncio.CancelledError:
                 break
@@ -272,6 +294,12 @@ def _state_path(run_id: str) -> Path:
     if not state_path.exists():
         raise HTTPException(status_code=404, detail="run not found")
     return state_path
+
+
+def _load_api_state(run_id: str) -> dict[str, Any]:
+    state = load_state(_state_path(run_id))
+    state["run_id"] = run_id
+    return state
 
 
 def _store_for_run(run_id: str):

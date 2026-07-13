@@ -1,29 +1,29 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Harness AgentOS Console</title>
+  <title>Harness AgentOS 控制台</title>
   <style>
     :root {
       color-scheme: light;
-      --page: #eef4f6;
+      --page: #eef5f7;
       --frame: #f8fbfc;
       --surface: #ffffff;
-      --surface-soft: #f3f8fa;
+      --soft: #f2f8fa;
       --sidebar: #edf6f8;
-      --line: #d9e6eb;
-      --line-strong: #c4d7de;
-      --ink: #18272d;
+      --line: #d8e6eb;
+      --line-strong: #c5d8df;
+      --ink: #17272e;
       --muted: #6f858e;
-      --faint: #9caeb5;
+      --faint: #9cafb7;
       --accent: #19aeda;
-      --accent-strong: #0b93be;
-      --blue-soft: #dff6fd;
+      --accent-strong: #087fa8;
+      --accent-soft: #dff6fd;
       --orange: #f4a62a;
-      --green: #24b34b;
-      --pink: #f24b7b;
-      --danger: #c43e3e;
+      --green: #24a94c;
+      --red: #c43e3e;
+      --code: #102027;
       --shadow: 0 18px 50px rgba(51, 80, 92, 0.16);
     }
 
@@ -32,18 +32,31 @@
     body {
       margin: 0;
       min-height: 100svh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
       background:
-        radial-gradient(circle at 16% 10%, rgba(25, 174, 218, 0.18), transparent 28%),
-        radial-gradient(circle at 88% 18%, rgba(244, 166, 42, 0.15), transparent 24%),
-        linear-gradient(135deg, #f7fbfc 0%, var(--page) 54%, #e8f1f4 100%);
+        radial-gradient(circle at 14% 10%, rgba(25, 174, 218, 0.17), transparent 29%),
+        radial-gradient(circle at 88% 16%, rgba(244, 166, 42, 0.13), transparent 25%),
+        linear-gradient(135deg, #f9fcfd 0%, var(--page) 58%, #e7f0f3 100%);
       color: var(--ink);
       overflow: hidden;
     }
 
-    button, textarea, select, input {
-      font: inherit;
+    button, textarea, select, input { font: inherit; }
+    button {
+      border: 0;
+      border-radius: 8px;
+      min-height: 38px;
+      padding: 0 13px;
+      cursor: pointer;
+      font-weight: 800;
+      color: var(--ink);
+      background: #e3eef2;
+      transition: transform 150ms ease, background 150ms ease, opacity 150ms ease;
     }
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+    button.primary { background: var(--accent); color: #06222c; }
+    button.danger { background: #ffe2e2; color: var(--red); }
 
     .app-shell {
       height: calc(100svh - 48px);
@@ -66,14 +79,7 @@
       border-bottom: 1px solid var(--line);
       font-size: 12px;
     }
-
-    .window-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-weight: 700;
-    }
-
+    .window-title { display: flex; align-items: center; gap: 8px; font-weight: 800; }
     .mark {
       width: 17px;
       height: 17px;
@@ -84,18 +90,12 @@
       color: #fff;
       font-size: 12px;
     }
-
-    .window-controls {
-      display: flex;
-      gap: 14px;
-      color: var(--muted);
-      font-size: 14px;
-    }
+    .window-controls { display: flex; gap: 14px; color: var(--muted); }
 
     .app-body {
       min-height: 0;
       display: grid;
-      grid-template-columns: 286px 1fr;
+      grid-template-columns: 292px 1fr;
     }
 
     .sidebar {
@@ -104,21 +104,20 @@
       border-right: 1px solid var(--line);
       display: grid;
       grid-template-rows: auto auto 1fr auto;
-      padding: 22px 14px;
       gap: 18px;
+      padding: 22px 14px;
     }
 
     .brand {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 0 10px 10px;
+      padding: 0 10px 8px;
       font-size: 24px;
       font-weight: 900;
       letter-spacing: -0.02em;
     }
-
-    .brand .logo {
+    .logo {
       width: 34px;
       height: 34px;
       border-radius: 9px;
@@ -126,102 +125,61 @@
       place-items: center;
       background: var(--accent);
       color: #fff;
-      font-size: 19px;
+      font-size: 17px;
     }
+    .brand-dot { color: var(--accent); }
 
-    .brand span span {
-      color: var(--accent);
-    }
-
-    .create-box {
-      display: grid;
-      gap: 10px;
-      padding: 0 0 4px;
-    }
-
+    .create-box { display: grid; gap: 10px; }
     .feature-prompt {
       width: 100%;
-      min-height: 128px;
+      min-height: 136px;
       resize: vertical;
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 12px;
       background: var(--surface);
       color: var(--ink);
-      line-height: 1.45;
+      line-height: 1.55;
       outline: none;
     }
-
-    .feature-prompt:focus,
-    .profile-select:focus,
-    .search:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(25, 174, 218, 0.15);
-    }
-
-    .profile-select {
+    .profile-select, .search, .terminal-input {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 10px 11px;
       background: var(--surface);
       color: var(--ink);
       outline: none;
     }
-
-    .button-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 9px;
+    .profile-select { padding: 10px 11px; }
+    .search { height: 40px; padding: 0 13px; }
+    .terminal-input { min-height: 40px; padding: 0 12px; }
+    .feature-prompt:focus, .profile-select:focus, .search:focus, .terminal-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(25, 174, 218, 0.15);
     }
+    .button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 
-    button {
-      border: 0;
+    .notice {
+      display: none;
+      border: 1px solid #f2ce82;
+      background: #fff8df;
       border-radius: 8px;
-      min-height: 38px;
-      padding: 0 13px;
-      cursor: pointer;
-      font-weight: 800;
-      color: var(--ink);
-      background: #e3eef2;
-      transition: transform 150ms ease, background 150ms ease, opacity 150ms ease;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.5;
     }
+    .notice.visible { display: block; }
+    .profile-choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
 
-    button.primary {
-      background: var(--accent);
-      color: #06222c;
-    }
-
-    button.danger {
-      background: #ffe1e1;
-      color: var(--danger);
-    }
-
-    button:hover {
-      transform: translateY(-1px);
-    }
-
-    button:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .nav-group {
-      display: grid;
-      gap: 6px;
-      overflow: auto;
-    }
-
+    .nav-group { display: grid; align-content: start; gap: 6px; overflow: auto; }
     .nav-label {
       margin: 14px 11px 5px;
       color: var(--muted);
       font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 0.14em;
+      font-weight: 900;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
     }
-
     .nav-item {
       display: flex;
       align-items: center;
@@ -232,54 +190,36 @@
       color: var(--muted);
       font-weight: 800;
       font-size: 14px;
-    }
-
-    .nav-item.clickable {
-      cursor: pointer;
       user-select: none;
     }
-
-    .nav-item.clickable:hover {
-      background: #e2eff4;
-      color: var(--ink);
-    }
-
+    .nav-item.clickable { cursor: pointer; }
+    .nav-item.clickable:hover { background: #e2eff4; color: var(--ink); }
     .nav-item.active {
-      background: var(--blue-soft);
+      background: var(--accent-soft);
       color: var(--ink);
       box-shadow: inset 3px 0 0 var(--accent);
     }
-
     .nav-item .key {
       margin-left: auto;
-      width: 22px;
+      min-width: 22px;
       height: 22px;
-      border-radius: 50%;
+      border-radius: 999px;
       display: grid;
       place-items: center;
       background: #d8e7ed;
       color: var(--muted);
       font-size: 11px;
     }
-
-    .nav-item.active .key {
-      background: var(--accent);
-      color: #fff;
-    }
-
-    .sidebar-footer {
-      border-top: 1px solid var(--line);
-      padding-top: 14px;
-    }
+    .nav-item.active .key { background: var(--accent); color: #fff; }
+    .sidebar-footer { border-top: 1px solid var(--line); padding-top: 14px; }
 
     .content {
       min-width: 0;
       min-height: 0;
       display: grid;
-      grid-template-rows: auto auto auto 1fr;
+      grid-template-rows: auto auto 1fr;
       background: rgba(255, 255, 255, 0.68);
     }
-
     .topbar {
       display: flex;
       align-items: center;
@@ -289,27 +229,17 @@
       border-bottom: 1px solid var(--line);
       background: rgba(248, 251, 252, 0.86);
     }
-
-    .title-block h1 {
-      margin: 0;
-      font-size: 22px;
-      letter-spacing: -0.02em;
-    }
-
+    .title-block h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
     .title-block p {
       margin: 3px 0 0;
       color: var(--muted);
       font-size: 13px;
+      max-width: 820px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-
-    .top-actions {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-
+    .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -323,39 +253,20 @@
       font-size: 13px;
       font-weight: 800;
     }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--faint);
-    }
-
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
     .status-dot.live { background: var(--green); }
     .status-dot.warn { background: var(--orange); }
-    .status-dot.error { background: var(--danger); }
+    .status-dot.error { background: var(--red); }
 
     .toolbar {
       display: grid;
-      grid-template-columns: minmax(230px, 560px) 1fr auto;
+      grid-template-columns: minmax(230px, 520px) 1fr auto;
       gap: 14px;
       align-items: center;
       padding: 14px 24px;
       border-bottom: 1px solid var(--line);
       background: rgba(255, 255, 255, 0.58);
     }
-
-    .search {
-      width: 100%;
-      height: 40px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface);
-      padding: 0 13px;
-      color: var(--ink);
-      outline: none;
-    }
-
     .route-note {
       color: var(--muted);
       font-size: 13px;
@@ -363,12 +274,7 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-
-    .mini-metrics {
-      display: flex;
-      gap: 8px;
-    }
-
+    .mini-metrics { display: flex; gap: 8px; }
     .metric {
       min-width: 74px;
       padding: 8px 10px;
@@ -377,237 +283,129 @@
       background: var(--surface);
       text-align: center;
     }
+    .metric strong { display: block; font-size: 15px; }
+    .metric span { color: var(--muted); font-size: 11px; }
 
-    .metric strong {
-      display: block;
-      font-size: 15px;
-    }
+    .view { display: none; min-height: 0; overflow: hidden; }
+    .view.active { display: block; }
 
-    .metric span {
-      color: var(--muted);
-      font-size: 11px;
-    }
-
-    .memory-panel {
-      display: grid;
-      grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.1fr) minmax(260px, 1.2fr);
-      gap: 12px;
-      padding: 14px 24px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(243, 248, 250, 0.72);
-    }
-
-    .memory-box {
-      min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: 9px;
-      background: var(--surface);
-      padding: 11px 12px;
-    }
-
-    .memory-box h2 {
-      margin: 0 0 8px;
-      font-size: 12px;
-      color: var(--muted);
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    .memory-line {
-      color: var(--ink);
-      font-size: 12px;
-      line-height: 1.45;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .memory-list {
-      display: grid;
-      gap: 6px;
-      max-height: 78px;
-      overflow: auto;
-    }
-
-    .memory-chip {
-      border-radius: 999px;
-      background: var(--blue-soft);
-      color: var(--accent-strong);
-      display: inline-flex;
-      align-items: center;
-      max-width: 100%;
-      padding: 4px 8px;
-      font-size: 11px;
-      font-weight: 800;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .board-wrap {
-      min-height: 0;
-      overflow: hidden;
-      padding: 18px 24px 22px;
-    }
-
-    .view {
-      display: none;
-      min-height: 0;
-    }
-
-    .view.active {
-      display: block;
-    }
-
-    .view.board-wrap.active {
-      display: block;
-    }
-
-    .board {
+    .progress-view { height: 100%; padding: 18px 24px 22px; overflow: hidden; }
+    .progress-grid {
       height: 100%;
-      display: grid;
-      grid-template-columns: repeat(4, minmax(245px, 1fr));
-      gap: 18px;
-      min-width: 1040px;
-    }
-
-    .column {
       min-height: 0;
       display: grid;
-      grid-template-rows: auto 1fr;
+      grid-template-columns: minmax(420px, 1.35fr) minmax(340px, 0.9fr);
+      gap: 18px;
+    }
+    .panel {
+      min-height: 0;
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: rgba(243, 248, 250, 0.86);
+      background: rgba(243, 248, 250, 0.9);
       overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr;
     }
-
-    .column-header {
+    .panel-header {
       display: flex;
       align-items: center;
-      gap: 9px;
+      justify-content: space-between;
+      gap: 12px;
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
-      font-weight: 900;
       font-size: 14px;
+      font-weight: 900;
     }
-
-    .column-header .count {
-      margin-left: auto;
+    .panel-count {
       min-width: 24px;
       height: 24px;
-      border-radius: 50%;
+      border-radius: 999px;
       display: grid;
       place-items: center;
       background: #e0ebef;
       color: var(--muted);
       font-size: 12px;
     }
-
-    .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--faint);
-    }
-
-    .dot.code { background: var(--accent); }
-    .dot.test { background: var(--orange); }
-    .dot.review { background: var(--pink); }
-    .dot.done { background: var(--green); }
-
-    .cards {
+    .timeline, .panel-list {
       min-height: 0;
       overflow: auto;
-      padding: 10px;
+      padding: 12px;
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
-
-    .task-card {
+    .timeline-row {
+      display: grid;
+      grid-template-columns: 108px 1fr;
+      gap: 12px;
+      padding: 12px;
       border: 1px solid var(--line);
       border-radius: 9px;
       background: var(--surface);
-      padding: 12px;
       box-shadow: 0 8px 18px rgba(57, 88, 100, 0.08);
-      animation: liftIn 220ms ease both;
+      animation: liftIn 180ms ease both;
     }
-
-    .task-card.live {
+    .timeline-row.live {
       border-color: var(--accent);
       box-shadow: 0 0 0 2px rgba(25, 174, 218, 0.16), 0 10px 20px rgba(57, 88, 100, 0.10);
     }
-
-    .card-meta {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 800;
-      margin-bottom: 8px;
-    }
-
+    .timeline-meta { color: var(--muted); font-size: 11px; font-weight: 800; line-height: 1.5; }
     .agent-chip {
-      color: var(--accent-strong);
-      background: var(--blue-soft);
-      border-radius: 999px;
+      display: inline-block;
+      max-width: 100%;
       padding: 3px 7px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-
-    .task-card h3 {
-      margin: 0;
+    .timeline-title { margin: 0; font-size: 13px; line-height: 1.4; font-weight: 900; }
+    .timeline-body {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .side-stack {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(150px, 0.78fr) minmax(170px, 1fr) minmax(170px, 1fr) minmax(150px, 0.9fr);
+      gap: 12px;
+    }
+    .summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .summary-item, .mini-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 9px 10px;
+      min-width: 0;
+    }
+    .summary-label, .mini-meta { color: var(--muted); font-size: 11px; font-weight: 800; margin-bottom: 4px; }
+    .summary-value, .mini-title {
       font-size: 13px;
-      line-height: 1.42;
+      font-weight: 900;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-
-    .task-card p {
-      margin: 8px 0 0;
+    .mini-body {
+      margin-top: 5px;
       color: var(--muted);
       font-size: 12px;
       line-height: 1.45;
+      white-space: pre-wrap;
       word-break: break-word;
     }
+    .mini-card.error { border-color: #f1b8b8; background: #fff6f6; }
+    .mini-card.ok { border-color: #bbdfc4; background: #f5fff7; }
+    .mini-card.test { border-color: #efd097; background: #fffaf0; }
+    a { color: var(--accent-strong); text-decoration: none; font-weight: 800; }
 
-    .card-actions {
-      display: flex;
-      gap: 7px;
-      margin-top: 12px;
-    }
-
-    .tiny-btn {
-      min-height: 28px;
-      padding: 0 10px;
-      font-size: 11px;
-      background: #e8f2f5;
-      color: var(--ink);
-    }
-
-    .recommendation {
-      display: none;
-      margin-top: 12px;
-      border: 1px solid #f2ce82;
-      background: #fff8df;
-      border-radius: 8px;
-      padding: 12px;
-      font-size: 13px;
-    }
-
-    .recommendation.visible { display: block; }
-
-    .profile-choices {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 9px;
-    }
-
-    .terminal-view {
-      min-height: 0;
-      height: 100%;
-      padding: 18px 24px 22px;
-    }
-
+    .terminal-view { height: 100%; padding: 18px 24px 22px; }
     .terminal-panel {
       height: 100%;
       min-height: 420px;
@@ -618,7 +416,6 @@
       overflow: hidden;
       background: #fbfdfe;
     }
-
     .terminal-header {
       display: flex;
       align-items: center;
@@ -626,10 +423,9 @@
       gap: 14px;
       padding: 13px 15px;
       border-bottom: 1px solid var(--line);
-      background: var(--surface-soft);
+      background: var(--soft);
       font-weight: 900;
     }
-
     .terminal-cwd {
       color: var(--muted);
       font-size: 12px;
@@ -638,27 +434,18 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-
     .terminal-output {
       overflow: auto;
       padding: 14px;
-      background: #102027;
+      background: var(--code);
       color: #d8f7ef;
       font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
       font-size: 12px;
       line-height: 1.55;
       white-space: pre-wrap;
     }
-
-    .terminal-line.command {
-      color: #74ddff;
-      margin-top: 10px;
-    }
-
-    .terminal-line.stderr {
-      color: #ffb0b0;
-    }
-
+    .terminal-line.command { color: #74ddff; margin-top: 10px; }
+    .terminal-line.stderr { color: #ffb0b0; }
     .terminal-input-row {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -668,149 +455,159 @@
       background: var(--surface);
     }
 
-    .terminal-input {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 0 12px;
-      min-height: 40px;
-      outline: none;
-      color: var(--ink);
-      background: #fff;
-    }
-
-    .terminal-input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(25, 174, 218, 0.15);
-    }
-
     @keyframes liftIn {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
     }
 
-    @media (max-width: 1100px) {
+    @media (max-width: 1180px) {
       body { overflow: auto; }
       .app-shell { height: auto; min-height: calc(100svh - 24px); margin: 12px; }
       .app-body { grid-template-columns: 1fr; }
       .sidebar { grid-template-rows: auto auto auto; }
-      .board-wrap { overflow-x: auto; }
       .toolbar { grid-template-columns: 1fr; }
-      .memory-panel { grid-template-columns: 1fr; }
+      .progress-grid { grid-template-columns: 1fr; }
+      .side-stack { grid-template-rows: repeat(4, minmax(180px, auto)); }
+      .progress-view { overflow: visible; }
     }
   </style>
 </head>
 <body>
   <div class="app-shell">
     <div class="window-bar">
-      <div class="window-title"><span class="mark">&lt;/&gt;</span> Harness AgentOS - Autonomous AI Development Studio</div>
-      <div class="window-controls"><span>-</span><span>□</span><span>×</span></div>
+      <div class="window-title"><span class="mark">&lt;/&gt;</span> Harness AgentOS - 多 Agent 开发控制台</div>
+      <div class="window-controls"><span>-</span><span>[]</span><span>x</span></div>
     </div>
 
     <div class="app-body">
       <aside class="sidebar">
-        <div class="brand"><div class="logo">&lt;/&gt;</div><span>harness<span>.</span></span></div>
+        <div class="brand"><div class="logo">&lt;/&gt;</div><span>harness<span class="brand-dot">.</span></span></div>
 
         <div class="create-box">
-          <textarea class="feature-prompt" id="prompt" placeholder="Describe the feature or task to build..."></textarea>
+          <textarea class="feature-prompt" id="prompt" placeholder="描述你想构建、修复或分析的功能..."></textarea>
           <select class="profile-select" id="profile">
-            <option value="auto">Auto route profile</option>
+            <option value="auto">自动路由 profile</option>
             <option value="app-builder">app-builder</option>
             <option value="terminal">terminal</option>
             <option value="swe-bench">swe-bench</option>
             <option value="reasoning">reasoning</option>
           </select>
           <div class="button-row">
-            <button class="primary" id="start">+ Add Feature</button>
-            <button id="resume" disabled>Resume</button>
+            <button class="primary" id="start">启动任务</button>
+            <button id="resume" disabled>继续</button>
           </div>
-          <button class="danger" id="pause" disabled>Pause Run</button>
-          <div class="recommendation" id="recommendation">
-            <strong>Profile confirmation required</strong>
+          <button class="danger" id="pause" disabled>暂停任务</button>
+          <div class="notice" id="recommendation">
+            <strong>需要确认 profile</strong>
             <div id="routeReason"></div>
             <div class="profile-choices" id="profileChoices"></div>
           </div>
-          <div class="recommendation" id="approvalBox">
-            <strong>Human approval required</strong>
+          <div class="notice" id="approvalBox">
+            <strong>需要人工批准</strong>
             <div id="approvalReason"></div>
-            <div class="profile-choices"><button id="approveRun">Approve and continue</button></div>
+            <div class="profile-choices"><button id="approveRun">批准并继续</button></div>
           </div>
         </div>
 
         <nav class="nav-group">
-          <div class="nav-label">Project</div>
-          <div class="nav-item active">▦ Kanban Board <span class="key">K</span></div>
-          <div class="nav-item">⟲ Agent Runner <span class="key" id="agentCount">0</span></div>
-          <div class="nav-label">Tools</div>
-          <div class="nav-item">▤ Spec Editor <span class="key">S</span></div>
-          <div class="nav-item">◌ AI Profiles <span class="key">P</span></div>
-          <div class="nav-item">⌁ Terminal <span class="key">T</span></div>
+          <div class="nav-label">项目</div>
+          <div class="nav-item clickable active" id="progressNav">实时进展 <span class="key">P</span></div>
+          <div class="nav-item">Agent 运行器 <span class="key" id="agentCount">0</span></div>
+          <div class="nav-label">工具</div>
+          <div class="nav-item">规格编辑器 <span class="key">S</span></div>
+          <div class="nav-item">AI Profiles <span class="key">A</span></div>
+          <div class="nav-item clickable" id="terminalNav">终端 <span class="key">T</span></div>
         </nav>
 
         <div class="sidebar-footer">
-          <div class="nav-item">□ Artifacts <span class="key" id="artifactCount">0</span></div>
-          <div class="nav-item">⚙ Settings <span class="key">G</span></div>
+          <div class="nav-item">产物 <span class="key" id="artifactCount">0</span></div>
+          <div class="nav-item">设置 <span class="key">G</span></div>
         </div>
       </aside>
 
       <main class="content">
         <header class="topbar">
           <div class="title-block">
-            <h1>Kanban Board</h1>
-            <p id="subtitle">No active run</p>
+            <h1 id="viewTitle">实时 Agent 进展</h1>
+            <p id="subtitle">暂无运行任务</p>
           </div>
           <div class="top-actions">
-            <div class="status-pill"><span class="status-dot" id="statusDot"></span><span id="connection">Idle</span></div>
-            <button id="refresh" title="Refresh current run">Refresh</button>
-            <button class="primary" id="quickRun">Auto Mode</button>
+            <div class="status-pill"><span class="status-dot" id="statusDot"></span><span id="connection">空闲</span></div>
+            <button id="refresh" title="刷新当前任务">刷新</button>
+            <button class="primary" id="quickRun">自动路由运行</button>
           </div>
         </header>
 
         <div class="toolbar">
-          <input class="search" id="search" placeholder="Search agent activity by keyword...">
-          <div class="route-note" id="routeNote">Route decision and memory adjustments appear here.</div>
+          <input class="search" id="search" placeholder="搜索时间线、文件、命令或产物...">
+          <div class="route-note" id="routeNote">Profile 路由结果和 Memory 修正会显示在这里。</div>
           <div class="mini-metrics">
-            <div class="metric"><strong id="roundMetric">-</strong><span>Round</span></div>
-            <div class="metric"><strong id="scoreMetric">-</strong><span>Score</span></div>
-            <div class="metric"><strong id="eventMetric">0</strong><span>Events</span></div>
+            <div class="metric"><strong id="roundMetric">-</strong><span>轮次</span></div>
+            <div class="metric"><strong id="scoreMetric">-</strong><span>评分</span></div>
+            <div class="metric"><strong id="eventMetric">0</strong><span>事件</span></div>
           </div>
         </div>
 
-        <section class="memory-panel" id="memoryPanel">
-          <div class="memory-box">
-            <h2>Memory Route</h2>
-            <div class="memory-line" id="memoryTaskType">Task type: -</div>
-            <div class="memory-line" id="memoryProfile">Profile: -</div>
-            <div class="memory-line" id="memoryConfidence">Confidence: -</div>
-          </div>
-          <div class="memory-box">
-            <h2>Adjustments</h2>
-            <div class="memory-list" id="memoryAdjustments"><span class="memory-chip">No memory adjustments yet</span></div>
-          </div>
-          <div class="memory-box">
-            <h2>Strategy Hints</h2>
-            <div class="memory-list" id="strategyHints"><span class="memory-chip">No strategy hints yet</span></div>
+        <section class="progress-view view active" id="progressView">
+          <div class="progress-grid">
+            <article class="panel">
+              <div class="panel-header">
+                <span>Agent 实时时间线</span>
+                <span class="panel-count" id="timelineCount">0</span>
+              </div>
+              <div class="timeline" id="timelineList"></div>
+            </article>
+
+            <div class="side-stack">
+              <article class="panel">
+                <div class="panel-header"><span>当前执行状态</span><span class="panel-count" id="currentCount">-</span></div>
+                <div class="panel-list">
+                  <div class="summary-grid">
+                    <div class="summary-item"><div class="summary-label">Profile</div><div class="summary-value" id="currentProfile">-</div></div>
+                    <div class="summary-item"><div class="summary-label">Phase</div><div class="summary-value" id="currentPhase">-</div></div>
+                    <div class="summary-item"><div class="summary-label">Status</div><div class="summary-value" id="currentStatus">-</div></div>
+                    <div class="summary-item"><div class="summary-label">Next Action</div><div class="summary-value" id="currentNext">-</div></div>
+                  </div>
+                  <div class="mini-card">
+                    <div class="mini-meta">路由结果</div>
+                    <div class="mini-title" id="routeTitle">等待路由</div>
+                    <div class="mini-body" id="routeBody">创建任务后会显示规则路由、LLM 路由和 Memory 修正结果。</div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="panel">
+                <div class="panel-header"><span>文件修改</span><span class="panel-count" id="fileCount">0</span></div>
+                <div class="panel-list" id="fileList"></div>
+              </article>
+
+              <article class="panel">
+                <div class="panel-header"><span>命令与测试</span><span class="panel-count" id="commandCount">0</span></div>
+                <div class="panel-list" id="commandList"></div>
+              </article>
+
+              <article class="panel">
+                <div class="panel-header"><span>产物与分析</span><span class="panel-count" id="artifactCountPanel">0</span></div>
+                <div class="panel-list" id="artifactList"></div>
+              </article>
+            </div>
           </div>
         </section>
 
-        <section class="board-wrap">
-          <div class="board">
-            <article class="column">
-              <div class="column-header"><span class="dot code"></span> Code Writing <span class="count" id="codeCount">0</span></div>
-              <div class="cards" id="codeCards"></div>
-            </article>
-            <article class="column">
-              <div class="column-header"><span class="dot test"></span> Running Tests <span class="count" id="testCount">0</span></div>
-              <div class="cards" id="testCards"></div>
-            </article>
-            <article class="column">
-              <div class="column-header"><span class="dot review"></span> Modified Files <span class="count" id="fileCount">0</span></div>
-              <div class="cards" id="fileCards"></div>
-            </article>
-            <article class="column">
-              <div class="column-header"><span class="dot done"></span> Verified / Logs <span class="count" id="doneCount">0</span></div>
-              <div class="cards" id="doneCards"></div>
-            </article>
+        <section class="terminal-view view" id="terminalView">
+          <div class="terminal-panel">
+            <div class="terminal-header">
+              <div>真实终端</div>
+              <div class="terminal-cwd" id="terminalCwd">cwd: project root</div>
+            </div>
+            <div class="terminal-output" id="terminalOutput">Harness 终端已就绪。
+命令会通过 FastAPI 后端执行。
+可以使用 cd 切换目录，按 Enter 运行。
+</div>
+            <div class="terminal-input-row">
+              <input class="terminal-input" id="terminalInput" placeholder="python --version">
+              <button class="primary" id="terminalRun">运行</button>
+            </div>
           </div>
         </section>
       </main>
@@ -822,46 +619,21 @@
     let source = null;
     let lastState = null;
     let lastTrace = [];
-
-    const qs = (id) => document.getElementById(id);
-    const viewTitle = document.querySelector(".title-block h1");
-    const kanbanView = document.querySelector(".board-wrap");
-    const navItems = Array.from(document.querySelectorAll(".nav-item"));
-    const kanbanNav = navItems.find(item => item.textContent.includes("Kanban"));
-    const terminalNav = navItems.find(item => item.textContent.includes("Terminal"));
-
-    let activeView = "kanban";
+    let activeView = "progress";
     let terminalCwd = "project root";
     let terminalBusy = false;
 
-    initializeViews();
+    const qs = (id) => document.getElementById(id);
 
     qs("start").addEventListener("click", startRun);
     qs("quickRun").addEventListener("click", startRun);
-    qs("pause").addEventListener("click", async () => {
-      if (!currentRun) return;
-      const state = await post(`/api/runs/${currentRun}/pause`);
-      renderState(state, lastTrace);
-    });
-    qs("resume").addEventListener("click", async () => {
-      if (!currentRun) return;
-      const state = await post(`/api/runs/${currentRun}/resume`);
-      renderState(state, lastTrace);
-      attachEvents(currentRun);
-    });
-    qs("approveRun").addEventListener("click", async () => {
-      if (!currentRun) return;
-      const state = await post(`/api/runs/${currentRun}/approve`);
-      renderState(state, lastTrace);
-      attachEvents(currentRun);
-    });
-    qs("refresh").addEventListener("click", async () => {
-      if (!currentRun) return;
-      const res = await fetch(`/api/runs/${currentRun}`);
-      renderState(await res.json(), lastTrace);
-    });
-    qs("search").addEventListener("input", () => renderBoard(lastState, lastTrace));
-
+    qs("pause").addEventListener("click", pauseRun);
+    qs("resume").addEventListener("click", resumeRun);
+    qs("approveRun").addEventListener("click", approveRun);
+    qs("refresh").addEventListener("click", refreshRun);
+    qs("search").addEventListener("input", () => renderProgress(lastState, lastTrace));
+    qs("progressNav").addEventListener("click", () => switchView("progress"));
+    qs("terminalNav").addEventListener("click", () => switchView("terminal"));
     qs("terminalRun").addEventListener("click", runTerminalCommand);
     qs("terminalInput").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -869,48 +641,6 @@
         runTerminalCommand();
       }
     });
-
-    function initializeViews() {
-      kanbanView.id = "kanbanView";
-      kanbanView.classList.add("view", "active");
-      kanbanView.insertAdjacentHTML("afterend", `
-        <section class="terminal-view view" id="terminalView">
-          <div class="terminal-panel">
-            <div class="terminal-header">
-              <div>Terminal</div>
-              <div class="terminal-cwd" id="terminalCwd">cwd: project root</div>
-            </div>
-            <div class="terminal-output" id="terminalOutput">Harness terminal ready.
-Commands run on the backend through FastAPI.
-Use cd to change directory. Press Enter to run.
-</div>
-            <div class="terminal-input-row">
-              <input class="terminal-input" id="terminalInput" placeholder="python --version">
-              <button class="primary" id="terminalRun">Run</button>
-            </div>
-          </div>
-        </section>
-      `);
-
-      if (kanbanNav) {
-        kanbanNav.classList.add("clickable");
-        kanbanNav.addEventListener("click", () => switchView("kanban"));
-      }
-      if (terminalNav) {
-        terminalNav.classList.add("clickable");
-        terminalNav.addEventListener("click", () => switchView("terminal"));
-      }
-    }
-
-    function switchView(view) {
-      activeView = view;
-      qs("kanbanView").classList.toggle("active", view === "kanban");
-      qs("terminalView").classList.toggle("active", view === "terminal");
-      if (kanbanNav) kanbanNav.classList.toggle("active", view === "kanban");
-      if (terminalNav) terminalNav.classList.toggle("active", view === "terminal");
-      viewTitle.textContent = view === "terminal" ? "Terminal" : "Kanban Board";
-      qs("search").placeholder = view === "terminal" ? "Terminal is active below..." : "Search agent activity by keyword...";
-    }
 
     async function startRun() {
       const prompt = qs("prompt").value.trim();
@@ -926,6 +656,34 @@ Use cd to change directory. Press Enter to run.
       attachEvents(currentRun);
     }
 
+    async function pauseRun() {
+      if (!currentRun) return;
+      renderState(await post(`/api/runs/${currentRun}/pause`), lastTrace);
+    }
+
+    async function resumeRun() {
+      if (!currentRun) return;
+      const state = await post(`/api/runs/${currentRun}/resume`);
+      renderState(state, lastTrace);
+      attachEvents(currentRun);
+    }
+
+    async function approveRun() {
+      if (!currentRun) return;
+      const state = await post(`/api/runs/${currentRun}/approve`);
+      renderState(state, lastTrace);
+      attachEvents(currentRun);
+    }
+
+    async function refreshRun() {
+      if (!currentRun) {
+        await loadLatestRun();
+        return;
+      }
+      const res = await fetch(`/api/runs/${currentRun}`);
+      renderState(await res.json(), lastTrace);
+    }
+
     async function post(url, body = {}) {
       const res = await fetch(url, {
         method: "POST",
@@ -933,6 +691,311 @@ Use cd to change directory. Press Enter to run.
         body: JSON.stringify(body)
       });
       return await res.json();
+    }
+
+    function attachEvents(runId) {
+      if (source) source.close();
+      source = new EventSource(`/api/runs/${runId}/events`);
+      qs("connection").textContent = `监听 ${runId}`;
+      source.addEventListener("update", (event) => {
+        const payload = JSON.parse(event.data);
+        renderState(payload.state, payload.trace || []);
+      });
+      source.addEventListener("message", async () => {
+        await refreshRun();
+      });
+      source.addEventListener("error", () => {
+        qs("connection").textContent = "正在重连";
+        qs("statusDot").className = "status-dot warn";
+      });
+    }
+
+    function renderState(state, trace) {
+      if (!state) return;
+      lastState = state;
+      lastTrace = trace || [];
+      currentRun = state.run_id;
+
+      qs("subtitle").textContent = `${state.prompt || "暂无任务"} / ${state.profile || "auto"}`;
+      qs("connection").textContent = `${statusText(state.status)} / ${state.phase || "idle"}`;
+      qs("statusDot").className = "status-dot " + (state.status === "error" ? "error" : state.active ? "live" : "warn");
+      qs("roundMetric").textContent = state.round_num || "-";
+      const scores = state.score_history || [];
+      qs("scoreMetric").textContent = scores.length ? formatScore(scores[scores.length - 1]) : "-";
+      qs("eventMetric").textContent = countEvents(state, trace);
+      qs("pause").disabled = !state.active;
+      qs("resume").disabled = state.active || state.status === "completed";
+
+      const decision = state.route_decision;
+      qs("routeNote").textContent = decision
+        ? `${decision.source || "route"} -> ${decision.profile || "待确认"} / ${percent(decision.confidence)} / ${decision.reasoning || ""}`
+        : "Profile 路由结果和 Memory 修正会显示在这里。";
+
+      renderRecommendation(state);
+      renderApproval(state);
+      renderProgress(state, trace || []);
+    }
+
+    function renderRecommendation(state) {
+      const box = qs("recommendation");
+      const decision = state.route_decision;
+      if (!state.requires_confirmation || !decision) {
+        box.classList.remove("visible");
+        return;
+      }
+      box.classList.add("visible");
+      qs("routeReason").textContent = decision.reasoning || "路由置信度较低，需要手动确认 profile。";
+      qs("profileChoices").innerHTML = (decision.alternatives || []).map(item => {
+        return `<button data-profile="${item.profile}">${escapeHtml(item.profile)} ${percent(item.confidence)}</button>`;
+      }).join("");
+      qs("profileChoices").querySelectorAll("button").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const state = await post(`/api/runs/${currentRun}/confirm-profile`, {profile: btn.dataset.profile});
+          renderState(state, lastTrace);
+          attachEvents(currentRun);
+        });
+      });
+    }
+
+    function renderApproval(state) {
+      const box = qs("approvalBox");
+      if (!state.requires_human_approval && state.status !== "waiting_approval") {
+        box.classList.remove("visible");
+        return;
+      }
+      const approval = state.human_approval || {};
+      box.classList.add("visible");
+      qs("approvalReason").textContent = approval.reason || "当前运行需要人工批准后继续。";
+    }
+
+    function renderProgress(state, trace) {
+      const query = qs("search").value.trim().toLowerCase();
+      const model = buildProgressModel(state, trace);
+      const filter = item => {
+        if (!query) return true;
+        return `${item.agent} ${item.kind} ${item.title} ${item.body}`.toLowerCase().includes(query);
+      };
+
+      const timeline = model.timeline.filter(filter).slice(0, 160);
+      const files = model.files.filter(filter).slice(0, 80);
+      const commands = model.commands.filter(filter).slice(0, 80);
+
+      qs("timelineCount").textContent = timeline.length;
+      qs("fileCount").textContent = files.length;
+      qs("commandCount").textContent = commands.length;
+      qs("artifactCountPanel").textContent = model.artifacts.length;
+      qs("artifactCount").textContent = model.artifacts.length;
+      qs("agentCount").textContent = model.agentCount;
+
+      qs("timelineList").innerHTML = timeline.length
+        ? timeline.map(renderTimelineItem).join("")
+        : emptyBlock("暂无活动", "Agent 写代码、调用工具、运行命令和调度状态会显示在这里。");
+      qs("fileList").innerHTML = files.length
+        ? files.map(item => renderMiniCard(item, "")).join("")
+        : emptyBlock("暂无文件修改", "write_file / edit_file 等文件操作会显示在这里。");
+      qs("commandList").innerHTML = commands.length
+        ? commands.map(item => renderMiniCard(item, item.kind === "测试" ? "test" : item.exitCode ? "error" : "")).join("")
+        : emptyBlock("暂无命令或测试", "run_bash、测试命令和退出码会显示在这里。");
+      qs("artifactList").innerHTML = model.artifacts.length
+        ? model.artifacts.map(renderArtifact).join("")
+        : emptyBlock("暂无产物", "生成文件、反馈、分析和截图会显示在这里。");
+
+      renderCurrentWork(state);
+    }
+
+    function renderCurrentWork(state) {
+      const decision = state && state.route_decision ? state.route_decision : {};
+      qs("currentCount").textContent = state ? (state.active ? "运行中" : statusText(state.status)) : "-";
+      qs("currentProfile").textContent = state ? (state.profile || "-") : "-";
+      qs("currentPhase").textContent = state ? (state.phase || "-") : "-";
+      qs("currentStatus").textContent = state ? statusText(state.status) : "-";
+      qs("currentNext").textContent = state ? (state.next_action || "无") : "-";
+      qs("routeTitle").textContent = decision.profile || state?.profile || "暂无路由";
+      const alternatives = (decision.alternatives || [])
+        .map(item => `${item.profile} ${percent(item.confidence)}`)
+        .join(", ");
+      qs("routeBody").textContent = decision.source
+        ? `来源=${decision.source}，置信度=${percent(decision.confidence)}。${decision.reasoning || ""}${alternatives ? " 候选：" + alternatives : ""}`
+        : "等待创建任务并完成路由。";
+    }
+
+    function buildProgressModel(state, trace) {
+      const timeline = [];
+      const files = [];
+      const commands = [];
+      const agents = new Set();
+
+      if (state && state.prompt) {
+        timeline.push({
+          t: state.updated_at || state.created_at || "",
+          agent: state.profile || "router",
+          kind: "状态",
+          title: state.status === "completed" ? "任务已完成" : "当前任务",
+          body: state.requires_confirmation ? "等待确认 profile 后继续。" : state.prompt,
+          live: Boolean(state.active),
+        });
+      }
+
+      (state?.events || []).forEach(event => {
+        const data = event.data || {};
+        const agent = data.agent || data.phase || "scheduler";
+        agents.add(agent);
+        timeline.push({
+          t: event.t || "",
+          agent,
+          kind: "调度",
+          title: titleForStateEvent(event),
+          body: summarizeData(data),
+          live: state?.active && event.t && event.t === state.last_event_at,
+        });
+      });
+
+      (trace || []).forEach((raw, index) => {
+        const event = normalizeEvent(raw);
+        if (!event) return;
+        agents.add(event.agent);
+        event.live = index >= trace.length - 5 && Boolean(state?.active);
+        timeline.push(event);
+        if (event.category === "file") files.push(event);
+        if (event.category === "command" || event.category === "test") commands.push(event);
+      });
+
+      const artifacts = (state?.artifacts?.files || []).map(file => ({
+        name: file.name,
+        size: file.size,
+        url: `/api/runs/${state.run_id}/artifact/${encodeURIComponent(file.name)}`,
+      }));
+      const analysis = state?.analysis || {};
+      if (analysis.feedback_preview) {
+        artifacts.unshift({
+          name: "feedback.md 预览",
+          size: analysis.feedback_preview.length,
+          preview: analysis.feedback_preview.slice(0, 500),
+        });
+      }
+
+      timeline.sort((a, b) => String(b.t).localeCompare(String(a.t)));
+      files.sort((a, b) => String(b.t).localeCompare(String(a.t)));
+      commands.sort((a, b) => String(b.t).localeCompare(String(a.t)));
+
+      return {timeline, files, commands, artifacts, agentCount: agents.size};
+    }
+
+    function normalizeEvent(raw) {
+      if (!raw) return null;
+      if (raw.event === "tool_call") {
+        const tool = raw.tool || "tool";
+        const args = raw.args || "";
+        const result = raw.result || raw.message || "";
+        if (tool === "write_file" || tool === "edit_file") {
+          return {
+            t: raw.t || "",
+            agent: raw.agent || "agent",
+            kind: tool === "write_file" ? "写入文件" : "修改文件",
+            category: "file",
+            title: extractPath(args) || "文件已修改",
+            body: result,
+          };
+        }
+        if (tool === "run_bash") {
+          const command = extractCommand(args) || "命令";
+          const isTest = looksLikeTest(command, result);
+          return {
+            t: raw.t || "",
+            agent: raw.agent || "agent",
+            kind: isTest ? "测试" : "命令",
+            category: isTest ? "test" : "command",
+            title: command,
+            body: result,
+            exitCode: extractExitCode(result),
+          };
+        }
+        return {
+          t: raw.t || "",
+          agent: raw.agent || "agent",
+          kind: "工具调用",
+          category: "activity",
+          title: `${tool} 调用`,
+          body: result || args,
+        };
+      }
+
+      if (raw.event === "llm_response") {
+        return {
+          t: raw.t || "",
+          agent: raw.agent || "agent",
+          kind: "模型响应",
+          category: "activity",
+          title: "LLM 响应",
+          body: raw.content || (raw.tool_calls || []).join(", ") || raw.finish_reason || "",
+        };
+      }
+
+      if (raw.event || raw.type) {
+        const data = raw.data || {};
+        return {
+          t: raw.t || raw.created_at || "",
+          agent: raw.agent || data.agent || data.phase || "scheduler",
+          kind: raw.event || raw.type,
+          category: raw.event === "error" || raw.type === "error" ? "test" : "activity",
+          title: raw.reason || data.reason || raw.type || raw.event || "事件",
+          body: raw.message || raw.result || raw.content || summarizeData(data),
+        };
+      }
+      return null;
+    }
+
+    function renderTimelineItem(item) {
+      return `
+        <div class="timeline-row ${item.live ? "live" : ""}">
+          <div class="timeline-meta">
+            <span class="agent-chip">${escapeHtml(item.agent || "agent")}</span>
+            <div>${escapeHtml(item.kind || "事件")}</div>
+            <div>${escapeHtml(formatTime(item.t))}</div>
+          </div>
+          <div>
+            <h3 class="timeline-title">${escapeHtml(item.title || "未命名事件")}</h3>
+            <div class="timeline-body">${escapeHtml(String(item.body || "")).slice(0, 900)}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderMiniCard(item, extraClass) {
+      return `
+        <div class="mini-card ${extraClass || ""}">
+          <div class="mini-meta">${escapeHtml(item.agent || "agent")} / ${escapeHtml(item.kind || "事件")} / ${escapeHtml(formatTime(item.t))}</div>
+          <div class="mini-title">${escapeHtml(item.title || "未命名")}</div>
+          <div class="mini-body">${escapeHtml(String(item.body || "")).slice(0, 600)}</div>
+        </div>
+      `;
+    }
+
+    function renderArtifact(item) {
+      const body = item.url
+        ? `<a href="${item.url}" target="_blank">${escapeHtml(item.name)}</a>`
+        : escapeHtml(item.preview || item.name);
+      return `
+        <div class="mini-card ok">
+          <div class="mini-meta">${item.size || 0} bytes</div>
+          <div class="mini-title">${body}</div>
+          ${item.preview ? `<div class="mini-body">${escapeHtml(item.preview)}</div>` : ""}
+        </div>
+      `;
+    }
+
+    function emptyBlock(title, body) {
+      return `<div class="mini-card"><div class="mini-title">${escapeHtml(title)}</div><div class="mini-body">${escapeHtml(body)}</div></div>`;
+    }
+
+    function switchView(view) {
+      activeView = view;
+      qs("progressView").classList.toggle("active", view === "progress");
+      qs("terminalView").classList.toggle("active", view === "terminal");
+      qs("progressNav").classList.toggle("active", view === "progress");
+      qs("terminalNav").classList.toggle("active", view === "terminal");
+      qs("viewTitle").textContent = view === "terminal" ? "真实终端" : "实时 Agent 进展";
+      qs("search").placeholder = view === "terminal" ? "终端界面已打开" : "搜索时间线、文件、命令或产物...";
     }
 
     async function runTerminalCommand() {
@@ -959,7 +1022,7 @@ Use cd to change directory. Press Enter to run.
         if (result.stderr) appendTerminalLine(result.stderr, "stderr");
         appendTerminalLine(`[exit ${result.exit_code}] ${result.duration}s`, result.exit_code === 0 ? "stdout" : "stderr");
       } catch (error) {
-        appendTerminalLine(`request failed: ${error}`, "stderr");
+        appendTerminalLine(`请求失败: ${error}`, "stderr");
       } finally {
         terminalBusy = false;
         qs("terminalRun").disabled = false;
@@ -976,225 +1039,44 @@ Use cd to change directory. Press Enter to run.
       output.scrollTop = output.scrollHeight;
     }
 
-    function attachEvents(runId) {
-      if (source) source.close();
-      source = new EventSource(`/api/runs/${runId}/events`);
-      qs("connection").textContent = `Watching ${runId}`;
-      source.addEventListener("update", (event) => {
-        const payload = JSON.parse(event.data);
-        renderState(payload.state, payload.trace || []);
-      });
-      source.addEventListener("error", () => {
-        qs("connection").textContent = "Reconnecting";
-        qs("statusDot").className = "status-dot warn";
-      });
-    }
-
-    function renderState(state, trace) {
-      lastState = state;
-      lastTrace = trace || lastTrace;
-      currentRun = state.run_id;
-
-      qs("subtitle").textContent = `${state.prompt || "No prompt"} · ${state.profile || "auto"}`;
-      qs("connection").textContent = `${state.status} · ${state.phase || "idle"}`;
-      qs("statusDot").className = "status-dot " + (state.status === "error" ? "error" : state.active ? "live" : "warn");
-      qs("roundMetric").textContent = state.round_num || "-";
-      const scores = state.score_history || [];
-      qs("scoreMetric").textContent = scores.length ? scores[scores.length - 1].toFixed ? scores[scores.length - 1].toFixed(1) : scores[scores.length - 1] : "-";
-      qs("eventMetric").textContent = (state.events || []).length + (trace || []).length;
-      qs("pause").disabled = !state.active;
-      qs("resume").disabled = state.active || state.status === "completed";
-
-      const decision = state.route_decision;
-      qs("routeNote").textContent = decision
-        ? `${decision.source || "route"} -> ${decision.profile || "needs confirmation"} · ${(decision.confidence * 100).toFixed(0)}% · ${decision.reasoning || ""}`
-        : "Route decision and memory adjustments appear here.";
-
-      renderRecommendation(state);
-      renderApproval(state);
-      renderMemory(state);
-      renderBoard(state, trace || []);
-    }
-
-    function renderMemory(state) {
-      const decision = state && state.route_decision ? state.route_decision : {};
-      const taskType = decision.task_type || state.task_type || "-";
-      const profile = state.profile || decision.profile || "auto";
-      const confidence = typeof decision.confidence === "number" ? `${Math.round(decision.confidence * 100)}%` : "-";
-      const taskConfidence = typeof decision.task_type_confidence === "number" ? `${Math.round(decision.task_type_confidence * 100)}%` : "-";
-
-      qs("memoryTaskType").textContent = `Task type: ${taskType} (${taskConfidence})`;
-      qs("memoryProfile").textContent = `Profile: ${profile}`;
-      qs("memoryConfidence").textContent = `Route confidence: ${confidence}`;
-
-      const adjustments = decision.memory_adjustments || [];
-      const refs = [...(decision.short_term_refs || []), ...(decision.long_term_refs || [])];
-      if (!adjustments.length && !refs.length) {
-        qs("memoryAdjustments").innerHTML = '<span class="memory-chip">No memory adjustments yet</span>';
-      } else {
-        const adjustmentHtml = adjustments.map(item => {
-          const total = Number(item.total_delta || 0);
-          return `<span class="memory-chip">${escapeHtml(item.profile)} ${total >= 0 ? "+" : ""}${total.toFixed(2)} (${Math.round((item.before || 0) * 100)}% -> ${Math.round((item.after || 0) * 100)}%)</span>`;
-        });
-        const refHtml = refs.slice(0, 4).map(ref => `<span class="memory-chip">${escapeHtml(ref)}</span>`);
-        qs("memoryAdjustments").innerHTML = [...adjustmentHtml, ...refHtml].join("");
-      }
-
-      const hints = state.strategy_hints || decision.strategy_hints || [];
-      if (!hints.length) {
-        qs("strategyHints").innerHTML = '<span class="memory-chip">No strategy hints yet</span>';
-      } else {
-        qs("strategyHints").innerHTML = hints.slice(0, 5).map(hint => {
-          const pct = typeof hint.confidence === "number" ? `${Math.round(hint.confidence * 100)}%` : "";
-          return `<span class="memory-chip">${escapeHtml(hint.profile || "profile")} 路 ${escapeHtml(hint.failure_reason || "pattern")} ${pct}: ${escapeHtml(hint.hint || "")}</span>`;
-        }).join("");
-      }
-    }
-
-    function renderRecommendation(state) {
-      const box = qs("recommendation");
-      const decision = state.route_decision;
-      if (!state.requires_confirmation || !decision) {
-        box.classList.remove("visible");
-        return;
-      }
-      box.classList.add("visible");
-      qs("routeReason").textContent = decision.reasoning || "Confidence is too low to execute automatically.";
-      qs("profileChoices").innerHTML = (decision.alternatives || []).map(item => {
-        return `<button data-profile="${item.profile}">${escapeHtml(item.profile)} ${(item.confidence * 100).toFixed(0)}%</button>`;
-      }).join("");
-      qs("profileChoices").querySelectorAll("button").forEach(btn => {
-        btn.addEventListener("click", async () => {
-          const state = await post(`/api/runs/${currentRun}/confirm-profile`, {profile: btn.dataset.profile});
-          renderState(state, lastTrace);
-          attachEvents(currentRun);
-        });
-      });
-    }
-
-    function renderApproval(state) {
-      const box = qs("approvalBox");
-      if (!state.requires_human_approval && state.status !== "waiting_approval") {
-        box.classList.remove("visible");
-        return;
-      }
-      const approval = state.human_approval || {};
-      box.classList.add("visible");
-      qs("approvalReason").textContent = approval.reason || "This run requires approval before continuing.";
-    }
-
-    function renderBoard(state, trace) {
-      const query = qs("search").value.trim().toLowerCase();
-      const cards = buildCards(state, trace).filter(card => {
-        if (!query) return true;
-        return `${card.title} ${card.body} ${card.agent}`.toLowerCase().includes(query);
-      });
-
-      const grouped = {
-        code: cards.filter(card => card.column === "code"),
-        test: cards.filter(card => card.column === "test"),
-        file: cards.filter(card => card.column === "file"),
-        done: cards.filter(card => card.column === "done"),
-      };
-
-      renderCards("codeCards", grouped.code, "codeCount");
-      renderCards("testCards", grouped.test, "testCount");
-      renderCards("fileCards", grouped.file, "fileCount");
-      renderCards("doneCards", grouped.done, "doneCount");
-      qs("agentCount").textContent = new Set(trace.map(event => event.agent).filter(Boolean)).size;
-      qs("artifactCount").textContent = state && state.artifacts && state.artifacts.files ? state.artifacts.files.length : 0;
-    }
-
-    function buildCards(state, trace) {
-      const cards = [];
-      if (state && state.prompt) {
-        cards.push({
-          column: state.status === "completed" ? "done" : "code",
-          agent: state.profile || "router",
-          tag: state.phase || "queued",
-          title: state.prompt,
-          body: state.requires_confirmation ? "Waiting for profile confirmation before execution." : `Next action: ${state.next_action || "none"}`,
-          live: Boolean(state.active),
-        });
-      }
-
-      (trace || []).forEach((event, index) => {
-        const tool = event.tool || "";
-        const agent = event.agent || "agent";
-        const args = event.args || "";
-        const result = event.result || event.message || event.reason || event.content || "";
-        const eventType = event.event || event.type || "event";
-
-        if (eventType === "tool_call" && (tool === "write_file" || tool === "edit_file")) {
-          cards.push({
-            column: "file",
-            agent,
-            tag: tool,
-            title: extractPath(args) || "File modified",
-            body: result,
-            live: index >= trace.length - 4,
-          });
-        } else if (eventType === "tool_call" && tool === "run_bash" && looksLikeTest(args, result)) {
-          cards.push({
-            column: "test",
-            agent,
-            tag: "test",
-            title: extractCommand(args) || "Test command",
-            body: result,
-            live: index >= trace.length - 4,
-          });
-        } else if (eventType === "tool_call") {
-          cards.push({
-            column: "code",
-            agent,
-            tag: tool || "tool",
-            title: extractCommand(args) || `${tool || "Tool"} call`,
-            body: result,
-            live: index >= trace.length - 4,
-          });
-        } else if (eventType === "finish" || eventType === "context" || eventType === "middleware" || eventType === "error") {
-          cards.push({
-            column: eventType === "error" ? "test" : "done",
-            agent,
-            tag: eventType,
-            title: event.reason || event.type || eventType,
-            body: result || JSON.stringify(event).slice(0, 500),
-            live: index >= trace.length - 4,
-          });
+    async function loadLatestRun() {
+      qs("connection").textContent = "正在加载最近任务";
+      try {
+        const res = await fetch("/api/runs");
+        const payload = await res.json();
+        const latest = payload.runs && payload.runs[0];
+        if (!latest) {
+          qs("connection").textContent = "暂无任务";
+          renderProgress(null, []);
+          return;
         }
-      });
-
-      if (state && state.artifacts && state.artifacts.files) {
-        state.artifacts.files.forEach(file => {
-          cards.push({
-            column: "done",
-            agent: "artifact",
-            tag: `${file.size} bytes`,
-            title: file.name,
-            body: `<a href="/api/runs/${state.run_id}/artifact/${encodeURIComponent(file.name)}" target="_blank">Open artifact</a>`,
-            live: false,
-            html: true,
-          });
-        });
+        const stateRes = await fetch(`/api/runs/${latest.run_id}`);
+        const state = await stateRes.json();
+        currentRun = state.run_id;
+        renderState(state, []);
+        attachEvents(currentRun);
+      } catch (error) {
+        qs("connection").textContent = "加载失败";
+        qs("routeNote").textContent = `无法加载最近任务: ${error}`;
+        renderProgress(null, []);
       }
-
-      return cards.slice(-120).reverse();
     }
 
-    function renderCards(containerId, cards, countId) {
-      qs(countId).textContent = cards.length;
-      if (!cards.length) {
-        qs(containerId).innerHTML = `<div class="task-card"><div class="card-meta">idle</div><h3>No live items yet</h3><p>Agent activity will appear here as soon as the run emits trace events.</p></div>`;
-        return;
-      }
-      qs(containerId).innerHTML = cards.map(card => `
-        <div class="task-card ${card.live ? "live" : ""}">
-          <div class="card-meta"><span class="agent-chip">${escapeHtml(card.agent)}</span><span>${escapeHtml(card.tag || "event")}</span></div>
-          <h3>${escapeHtml(String(card.title || "Untitled")).slice(0, 180)}</h3>
-          <p>${card.html ? card.body : escapeHtml(String(card.body || "")).slice(0, 360)}</p>
-          <div class="card-actions"><button class="tiny-btn">Logs</button><button class="tiny-btn">Details</button></div>
-        </div>
-      `).join("");
+    function titleForStateEvent(event) {
+      const data = event.data || {};
+      if (event.type === "phase_started") return `开始阶段 ${data.phase || ""}`;
+      if (event.type === "phase_completed") return `完成阶段 ${data.phase || ""}`;
+      if (event.type === "before_agent_run") return `Agent 开始运行: ${data.agent || "agent"}`;
+      if (event.type === "after_agent_run") return `Agent 运行结束: ${data.agent || "agent"}`;
+      if (event.type === "route_decision") return `路由到 ${data.profile || "profile"}`;
+      return event.type || "事件";
+    }
+
+    function summarizeData(data) {
+      if (!data || !Object.keys(data).length) return "";
+      return Object.entries(data)
+        .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value).slice(0, 300) : value}`)
+        .join("\n");
     }
 
     function looksLikeTest(args, result) {
@@ -1212,6 +1094,44 @@ Use cd to change directory. Press Enter to run.
       return match ? match[1] : "";
     }
 
+    function extractExitCode(result) {
+      const match = String(result).match(/\[exit code:\s*(\d+)\]/i);
+      return match ? Number(match[1]) : 0;
+    }
+
+    function countEvents(state, trace) {
+      return (state?.events || []).length + (trace || []).length;
+    }
+
+    function percent(value) {
+      return typeof value === "number" ? `${Math.round(value * 100)}%` : "-";
+    }
+
+    function formatScore(value) {
+      const num = Number(value);
+      return Number.isFinite(num) ? num.toFixed(1) : String(value);
+    }
+
+    function formatTime(value) {
+      if (value === undefined || value === null || value === "") return "";
+      if (typeof value === "number") return `${value}s`;
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) return date.toLocaleTimeString();
+      return String(value);
+    }
+
+    function statusText(status) {
+      const map = {
+        queued: "排队中",
+        running: "运行中",
+        completed: "已完成",
+        error: "错误",
+        waiting_approval: "等待批准",
+        paused: "已暂停"
+      };
+      return map[status] || status || "空闲";
+    }
+
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, ch => ({
         "&": "&amp;",
@@ -1222,7 +1142,8 @@ Use cd to change directory. Press Enter to run.
       }[ch]));
     }
 
-    renderBoard(null, []);
+    renderProgress(null, []);
+    loadLatestRun();
   </script>
 </body>
 </html>

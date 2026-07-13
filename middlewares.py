@@ -140,6 +140,39 @@ class LoopDetectionMiddleware(AgentMiddleware):
 
 
 # ---------------------------------------------------------------------------
+# Browser Test Budget
+# ---------------------------------------------------------------------------
+
+class BrowserTestBudgetMiddleware(AgentMiddleware):
+    """Bounds evaluator browser exploration so QA produces feedback instead of looping."""
+
+    def __init__(self, soft_limit: int = 6, hard_limit: int = 10):
+        self.soft_limit = soft_limit
+        self.hard_limit = hard_limit
+        self.browser_test_count = 0
+        self._soft_warned = False
+
+    def post_tool(self, tool_name: str, tool_args: dict, result: str,
+                  messages: list[dict]) -> str | None:
+        if tool_name != "browser_test":
+            return None
+
+        self.browser_test_count += 1
+        if self.browser_test_count >= self.hard_limit:
+            return (
+                "[SYSTEM] Browser test budget exhausted. Stop calling browser_test. "
+                "Use the evidence already collected to write feedback.md now, then finish."
+            )
+        if self.browser_test_count >= self.soft_limit and not self._soft_warned:
+            self._soft_warned = True
+            return (
+                "[SYSTEM] You have enough browser evidence. Run at most one more focused "
+                "browser_test only if it is essential; otherwise write feedback.md now."
+            )
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Pre-Exit Verification
 # ---------------------------------------------------------------------------
 

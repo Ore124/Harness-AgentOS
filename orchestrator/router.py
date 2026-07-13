@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -173,7 +174,9 @@ class Router:
         try:
             from agents import get_client
             import config
+            import metrics
 
+            started = time.perf_counter()
             response = get_client().chat.completions.create(
                 model=config.MODEL,
                 messages=[
@@ -189,7 +192,20 @@ class Router:
                 ],
                 max_tokens=300,
             )
+            call_index = metrics.RECORDER.record_llm_call(
+                role="router",
+                phase="route",
+                model=config.MODEL,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                usage=getattr(response, "usage", None),
+            )
             content = response.choices[0].message.content or ""
+            metrics.RECORDER.record_llm_result(
+                call_index=call_index,
+                tool_names=[],
+                finish_reason=response.choices[0].finish_reason,
+                content=content,
+            )
             match = re.search(r"\{.*\}", content, flags=re.DOTALL)
             if not match:
                 return None

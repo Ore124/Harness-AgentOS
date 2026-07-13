@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 import inspect
@@ -13,6 +14,7 @@ import config
 import metrics
 import tools
 from orchestrator.analytics import analyze_workspace, list_artifacts
+from orchestrator.canonical_trace import emit_event
 from orchestrator.failure_evidence import (
     append_failure_evidence,
     build_failure_evidence,
@@ -27,6 +29,27 @@ from orchestrator.state import append_event, load_state, now_iso, save_state
 from orchestrator.strategy import append_strategy_hints_to_prompt
 
 log = logging.getLogger("harness")
+
+
+class PhaseExecutionError(RuntimeError):
+    """Raised when an agent terminates a phase without completing it normally."""
+
+
+def _require_successful_agent_result(result: Any, phase: str) -> None:
+    """Map native agent failures into Scheduler's existing recovery path.
+
+    Older test doubles and third-party agents return plain strings, which retain
+    the historic success behavior until they adopt ``AgentRunResult``.
+    """
+    # Import lazily: tools imports an orchestrator submodule while agents is
+    # initializing, so importing AgentRunResult at module import time cycles.
+    from agents import AgentRunResult
+
+    if isinstance(result, AgentRunResult) and not result.succeeded:
+        raise PhaseExecutionError(
+            f"{phase} agent exited with {result.exit_reason} after "
+            f"{result.iterations} iteration(s)"
+        )
 
 
 class PhaseRunner(Protocol):
@@ -59,7 +82,6 @@ class HarnessPhaseRunner:
         context = RunContext.from_state(state)
         context.workspace.mkdir(parents=True, exist_ok=True)
         self._ensure_git(context.workspace)
-        config.WORKSPACE = str(context.workspace)
 
         profile = get_profile(profile_name)
         harness = Harness(profile)
@@ -67,37 +89,49 @@ class HarnessPhaseRunner:
         return harness, profile, allocation
 
     def plan(self, state: dict[str, Any]) -> dict[str, Any]:
+        return self._run_in_context(state, self._plan)
+
+    def _plan(self, state: dict[str, Any], context: RunContext) -> dict[str, Any]:
         harness, profile, allocation = self._prepare(state)
         state["time_allocation"] = allocation
 
         if harness.planner and allocation.get("planner_enabled", True):
-            _run_agent(
+            result = _run_agent(
                 harness.planner,
                 f"Create a plan for the following task:\n\n"
                 f"{state['prompt']}\n\n"
                 f"Save the plan to {config.SPEC_FILE}.",
                 run_id=state.get("run_id"),
                 phase="plan",
+                run_context=context,
             )
+            _require_successful_agent_result(result, "plan")
         else:
-            spec_path = Path(config.WORKSPACE) / config.SPEC_FILE
+            spec_path = context.workspace / config.SPEC_FILE
             spec_path.write_text(f"# Task\n\n{state['prompt']}\n", encoding="utf-8")
 
-        state["artifacts"] = {"files": list_artifacts(config.WORKSPACE)}
+        state["artifacts"] = {"files": list_artifacts(context.workspace)}
         return state
 
     def contract(self, state: dict[str, Any]) -> dict[str, Any]:
+        return self._run_in_context(state, self._contract)
+
+    def _contract(self, state: dict[str, Any], context: RunContext) -> dict[str, Any]:
         harness, _profile, _allocation = self._prepare(state)
         if harness.contract_proposer and harness.contract_reviewer:
             harness._negotiate_contract(
                 state.get("round_num", 1),
                 run_id=state.get("run_id"),
                 phase="contract",
+                user_prompt=state.get("prompt"),
             )
-        state["artifacts"] = {"files": list_artifacts(config.WORKSPACE)}
+        state["artifacts"] = {"files": list_artifacts(context.workspace)}
         return state
 
     def build(self, state: dict[str, Any]) -> dict[str, Any]:
+        return self._run_in_context(state, self._build)
+
+    def _build(self, state: dict[str, Any], context: RunContext) -> dict[str, Any]:
         harness, profile, _allocation = self._prepare(state)
         total_start = _parse_start_time(state.get("created_at"))
 
@@ -109,7 +143,7 @@ class HarnessPhaseRunner:
                 if task_timeout:
                     middleware.budget_seconds = task_timeout
 
-        feedback_path = Path(config.WORKSPACE) / config.FEEDBACK_FILE
+        feedback_path = context.workspace / config.FEEDBACK_FILE
         prev_feedback = feedback_path.read_text(encoding="utf-8", errors="replace") if feedback_path.exists() else ""
         if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
             prev_feedback = render_retry_context(state, prev_feedback)
@@ -121,11 +155,21 @@ class HarnessPhaseRunner:
             score_history,
         )
         build_task = append_strategy_hints_to_prompt(build_task, state, "builder")
-        _run_agent(harness.builder, build_task, run_id=state.get("run_id"), phase="build")
-        state["artifacts"] = {"files": list_artifacts(config.WORKSPACE)}
+        result = _run_agent(
+            harness.builder,
+            build_task,
+            run_id=state.get("run_id"),
+            phase="build",
+            run_context=context,
+        )
+        _require_successful_agent_result(result, "build")
+        state["artifacts"] = {"files": list_artifacts(context.workspace)}
         return state
 
     def evaluate(self, state: dict[str, Any]) -> dict[str, Any]:
+        return self._run_in_context(state, self._evaluate)
+
+    def _evaluate(self, state: dict[str, Any], context: RunContext) -> dict[str, Any]:
         harness, profile, allocation = self._prepare(state)
         if not harness.evaluator or not allocation.get("evaluator_enabled", True):
             state["evaluation_skipped"] = True
@@ -138,15 +182,28 @@ class HarnessPhaseRunner:
             f"Score each criterion honestly. Write your evaluation to {config.FEEDBACK_FILE}."
         )
         eval_task = append_strategy_hints_to_prompt(eval_task, state, "evaluator")
-        _run_agent(harness.evaluator, eval_task, run_id=state.get("run_id"), phase="evaluate")
+        result = _run_agent(
+            harness.evaluator,
+            eval_task,
+            run_id=state.get("run_id"),
+            phase="evaluate",
+            run_context=context,
+        )
+        _require_successful_agent_result(result, "evaluate")
         tools.stop_dev_server()
 
-        feedback_path = Path(config.WORKSPACE) / config.FEEDBACK_FILE
+        feedback_path = context.workspace / config.FEEDBACK_FILE
         feedback_text = feedback_path.read_text(encoding="utf-8", errors="replace") if feedback_path.exists() else ""
         score = profile.extract_score(feedback_text)
         state.setdefault("score_history", []).append(score)
-        state["artifacts"] = {"files": list_artifacts(config.WORKSPACE)}
+        state["artifacts"] = {"files": list_artifacts(context.workspace)}
         return state
+
+    @staticmethod
+    def _run_in_context(state: dict[str, Any], operation) -> dict[str, Any]:
+        context = RunContext.from_state(state)
+        with context.activate():
+            return operation(state, context)
 
     @staticmethod
     def _ensure_git(workspace: Path) -> None:
@@ -185,6 +242,10 @@ class Scheduler:
 
     def step_once(self) -> dict[str, Any]:
         state = load_state(self.state_path)
+        if not state.get("canonical_trace_started"):
+            self._trace(state, "run_started", {"task_id": state.get("prompt"), "model": config.MODEL, "initial_workspace": state.get("workspace"), "feature_flags": _trace_flags()})
+            state["canonical_trace_started"] = True
+            save_state(self.state_path, state)
 
         if state.get("requires_human_approval") and not state.get("human_approval", {}).get("approved"):
             state = self._apply_hook_result(state, self.hooks.on_human_approval_required(state))
@@ -231,6 +292,7 @@ class Scheduler:
             save_state(self.state_path, state)
             return load_state(self.state_path)
         except Exception as exc:
+            self._cleanup_run_processes(state)
             if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
                 evidence = build_failure_evidence(
                     state,
@@ -249,6 +311,8 @@ class Scheduler:
                 state["status"] = "error"
                 state["active"] = False
                 state["last_error"] = {"type": type(exc).__name__, "message": str(exc)}
+            if state.get("status") == "error":
+                self._trace(state, "run_failed", {"status": "error", "task_success": False, "error": str(exc)})
             append_event(state, "scheduler_error", state["last_error"] or {"message": str(exc)})
             save_state(self.state_path, state)
             return load_state(self.state_path)
@@ -272,6 +336,7 @@ class Scheduler:
         state = self._apply_hook_result(state, self.hooks.before_route(state))
         append_event(state, "before_transition", {"from": from_phase, "to": "route"})
         self.hooks.before_transition(from_phase, "route", state)
+        self._trace(state, "state_changed", {"from": from_phase, "to": "route", "status": state.get("status")}, phase="route")
         decision = self.router.route(state["prompt"], state.get("profile"))
         state["route_decision"] = decision.to_dict()
         state["task_type"] = decision.task_type
@@ -294,6 +359,7 @@ class Scheduler:
         state["requires_confirmation"] = False
         state["phase"] = "plan"
         state["next_action"] = "plan"
+        self._trace(state, "state_changed", {"from": from_phase, "to": "plan", "status": state.get("status")}, phase="plan")
         append_event(state, "after_transition", {"from": from_phase, "to": "plan"})
         self.hooks.after_transition(from_phase, "plan", state)
         return state
@@ -312,8 +378,10 @@ class Scheduler:
         metrics.RECORDER.start_phase(phase)
         state["phase"] = phase
         state["status"] = "running"
+        self._trace(state, "state_changed", {"from": from_phase, "to": phase, "status": "running"}, phase=phase)
         state["phase_started_at"] = now_iso()
         append_event(state, "phase_started", {"phase": phase, "round": state.get("round_num")})
+        self._trace(state, "phase_started", {"status": "running"}, phase=phase)
         append_event(state, "before_transition", {"from": from_phase, "to": phase})
         save_state(self.state_path, state)
 
@@ -322,11 +390,14 @@ class Scheduler:
         save_state(self.state_path, state)
         state = self._apply_hook_result(state, self.hooks.before_agent_run(agent_name, state))
         metrics.RECORDER.add_latency("scheduler_state_transitions_ms", int((time.perf_counter() - transition_started) * 1000))
-        state = callback(load_state(self.state_path))
+        callback_result = callback(load_state(self.state_path))
+        _require_successful_agent_result(callback_result, phase)
+        state = self._enforce_artifact_scope(callback_result, phase)
         transition_started = time.perf_counter()
         append_event(state, "after_agent_run", {"agent": agent_name, "phase": phase})
         state = self._apply_hook_result(state, self.hooks.after_agent_run(agent_name, state))
         append_event(state, "phase_completed", {"phase": phase, "round": state.get("round_num")})
+        self._trace(state, "phase_completed", {"status": "running"}, phase=phase)
         append_event(state, "after_transition", {"from": from_phase, "to": phase})
         after_artifacts = list((state.get("artifacts") or {}).get("files", []))
         state = self._apply_hook_result(state, self.hooks.on_artifact_changed(before_artifacts, after_artifacts, state))
@@ -407,17 +478,27 @@ class Scheduler:
         return state
 
     def _analyze(self, state: dict[str, Any]) -> dict[str, Any]:
+        self._cleanup_run_processes(state)
         append_event(state, "phase_started", {"phase": "analyze"})
         analysis = analyze_workspace(state["workspace"])
         state["analysis"] = analysis
         state["artifacts"] = {"files": list_artifacts(state["workspace"])}
+        task_success = self._task_success(state)
+        final_status = "completed" if task_success else "error"
+        terminal_event = "run_completed" if task_success else "run_failed"
         state["phase"] = "complete"
         state["next_action"] = None
-        state["status"] = "completed"
+        state["status"] = final_status
+        state["validated"] = task_success
         state["active"] = False
+        if not task_success and not state.get("last_error"):
+            state["last_error"] = {
+                "type": "ValidationFailed",
+                "message": "Run did not meet score and validation requirements.",
+            }
         metrics.RECORDER.record_status_change(True)
         append_event(state, "phase_completed", {"phase": "analyze"})
-        append_event(state, "run_completed", {"status": "completed"})
+        append_event(state, terminal_event, {"status": final_status, "task_success": task_success})
         append_event(state, "before_memory_update", {
             "profile": state.get("profile"),
             "status": state.get("status"),
@@ -431,17 +512,50 @@ class Scheduler:
                 "profile": state.get("profile"),
                 "tool_calls": (analysis.get("tool_calls") or {}).get("total", 0),
             })
-        scores = state.get("score_history") or []
-        task_success = bool(scores and float(scores[-1]) >= self._pass_threshold(state))
-        if not scores:
-            task_success = state.get("status") == "completed"
         verification_success = (state.get("validation") or {}).get("status") == "verified"
         metrics.RECORDER.record_recovery_result(task_success=task_success)
+        self._trace(state, terminal_event, {"status": final_status, "task_success": task_success}, phase="complete")
         metrics.RECORDER.finish_run(
             task_success=task_success,
             verification_success=verification_success,
         )
         return state
+
+    def _task_success(self, state: dict[str, Any]) -> bool:
+        scores = state.get("score_history") or []
+        score_ok = bool(scores and float(scores[-1]) >= self._pass_threshold(state))
+        validation = state.get("validation") or {}
+        verification_ok = validation.get("status") == "verified"
+        if scores:
+            return score_ok and verification_ok
+        return verification_ok
+
+    def _enforce_artifact_scope(self, state: dict[str, Any], phase: str) -> dict[str, Any]:
+        if phase not in {"build", "evaluate"} or not _requires_single_html_file(state):
+            return state
+
+        workspace = Path(state["workspace"])
+        removed = _remove_single_html_extras(workspace)
+        if not removed:
+            return state
+
+        state["artifacts"] = {"files": list_artifacts(workspace)}
+        append_event(state, "artifact_scope_enforced", {
+            "phase": phase,
+            "policy": "single_html_file",
+            "removed": removed,
+        })
+        return state
+
+    @staticmethod
+    def _cleanup_run_processes(state: dict[str, Any]) -> None:
+        run_id = state.get("run_id")
+        if run_id:
+            tools.cleanup_run_processes(str(run_id))
+
+    @staticmethod
+    def _trace(state: dict[str, Any], event_type: str, payload: dict[str, Any], *, phase: str | None = None) -> None:
+        emit_event(state["workspace"], state["run_id"], event_type, payload, phase=phase or state.get("phase"))
 
     def _record_round_failure_evidence(
         self,
@@ -583,17 +697,26 @@ def _parse_start_time(value: str | None) -> float:
         return time.time()
 
 
-def _run_agent(agent, task: str, *, run_id: str | None, phase: str | None) -> str:
+def _run_agent(
+    agent,
+    task: str,
+    *,
+    run_id: str | None,
+    phase: str | None,
+    run_context: RunContext | None = None,
+) -> Any:
     run_method = agent.run
     signature = inspect.signature(run_method)
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
-        return run_method(task, run_id=run_id, phase=phase)
+        return run_method(task, run_id=run_id, phase=phase, run_context=run_context)
     if "run_id" in signature.parameters or "phase" in signature.parameters:
         kwargs = {}
         if "run_id" in signature.parameters:
             kwargs["run_id"] = run_id
         if "phase" in signature.parameters:
             kwargs["phase"] = phase
+        if "run_context" in signature.parameters:
+            kwargs["run_context"] = run_context
         return run_method(task, **kwargs)
     return run_method(task)
 
@@ -604,3 +727,52 @@ def _merge_patch(state: dict[str, Any], patch: dict[str, Any]) -> None:
             state[key].update(value)
         else:
             state[key] = value
+
+
+def _trace_flags() -> dict[str, bool]:
+    return {name: bool(getattr(config, name)) for name in dir(config) if name.startswith("HARNESS_") and isinstance(getattr(config, name), bool)}
+
+
+def _requires_single_html_file(state: dict[str, Any]) -> bool:
+    text = str(state.get("prompt") or "")
+    spec = Path(str(state.get("workspace") or "")) / config.SPEC_FILE
+    if spec.exists():
+        try:
+            text += "\n" + spec.read_text(encoding="utf-8", errors="replace")[:4000]
+        except OSError:
+            pass
+    return bool(re.search(r"\b(?:single|one)\s+(?:html|\.html)\s+file\b", text, re.IGNORECASE))
+
+
+def _remove_single_html_extras(workspace: Path) -> list[str]:
+    removed: list[str] = []
+
+    html_files = sorted(path for path in workspace.glob("*.html") if path.is_file())
+    keep_html = max(html_files, key=lambda path: path.stat().st_size, default=None)
+    for path in html_files:
+        if path != keep_html:
+            _remove_file(path, workspace, removed)
+
+    for path in (workspace.iterdir() if workspace.exists() else []):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        if (
+            name == "server.log"
+            or name.startswith("test_") and path.suffix.lower() in {".js", ".mjs", ".cjs", ".ts"}
+            or name.startswith("validation") and path.suffix.lower() in {".js", ".mjs", ".cjs", ".ts"}
+            or name.endswith("-complete.md")
+            or name.endswith("_complete.md")
+        ):
+            _remove_file(path, workspace, removed)
+
+    return removed
+
+
+def _remove_file(path: Path, workspace: Path, removed: list[str]) -> None:
+    try:
+        rel = path.relative_to(workspace).as_posix()
+        path.unlink()
+        removed.append(rel)
+    except OSError:
+        return

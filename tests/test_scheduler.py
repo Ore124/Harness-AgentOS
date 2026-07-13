@@ -4,7 +4,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from orchestrator.analytics import list_artifacts
-from orchestrator.scheduler import Scheduler, approve_human_action, confirm_profile, set_active
+from agents import AgentRunResult
+from orchestrator.scheduler import (
+    PhaseExecutionError,
+    Scheduler,
+    _require_successful_agent_result,
+    approve_human_action,
+    confirm_profile,
+    set_active,
+)
 from orchestrator.state import create_run_state, load_state, now_iso, save_state, state_path_for_workspace
 
 
@@ -39,6 +47,20 @@ class FileWritingRunner(FakeRunner):
         return state
 
 
+class SingleHtmlScopeRunner(FakeRunner):
+    def build(self, state):
+        self.calls.append("build")
+        workspace = Path(state["workspace"])
+        (workspace / "pomodoro-timer.html").write_text("<html>" + ("a" * 200) + "</html>", encoding="utf-8")
+        (workspace / "pomodoro.html").write_text("<html>duplicate</html>", encoding="utf-8")
+        (workspace / "test_timer.js").write_text("console.log('temporary test')", encoding="utf-8")
+        (workspace / "validation_complete.js").write_text("module.exports = true", encoding="utf-8")
+        (workspace / "pomodoro-timer-complete.md").write_text("done", encoding="utf-8")
+        (workspace / "server.log").write_text("", encoding="utf-8")
+        state["artifacts"] = {"files": list_artifacts(workspace)}
+        return state
+
+
 class FailingRunner(FakeRunner):
     def build(self, state):
         self.calls.append("build")
@@ -57,7 +79,19 @@ class LowScoreRunner(FakeRunner):
         return state
 
 
+class TimeBudgetResultRunner(FakeRunner):
+    def build(self, state):
+        self.calls.append("build")
+        return AgentRunResult("", "time_budget", 1)
+
+
 class SchedulerTests(unittest.TestCase):
+    def test_unsuccessful_agent_result_requires_phase_failure(self):
+        result = AgentRunResult(text="", exit_reason="api_errors", iterations=5)
+
+        with self.assertRaises(PhaseExecutionError):
+            _require_successful_agent_result(result, "build")
+
     def test_harness_delegates_to_scheduler(self):
         import harness
 
@@ -118,6 +152,38 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(state["next_action"], "build")
             self.assertEqual(state["recovery"]["attempts"], 1)
 
+    def test_failed_phase_cleans_only_its_run_processes_before_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_state(tmp, profile="terminal", phase="build", next_action="build")
+            state = load_state(path)
+            state["hook_policy"] = {"max_recovery_attempts": 1}
+            save_state(path, state)
+
+            with patch("orchestrator.scheduler.tools.cleanup_run_processes") as cleanup:
+                Scheduler(path, phase_runner=FailingRunner()).step_once()
+
+            cleanup.assert_called_once_with("run")
+
+    def test_unsuccessful_agent_result_records_evidence_and_retries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_state(tmp, profile="terminal", phase="build", next_action="build")
+            state = load_state(path)
+            state["hook_policy"] = {"max_recovery_attempts": 1}
+            save_state(path, state)
+            runner = TimeBudgetResultRunner()
+
+            with patch("orchestrator.scheduler.tools.cleanup_run_processes") as cleanup:
+                state = Scheduler(path, phase_runner=runner).step_once()
+
+            self.assertEqual(runner.calls, ["build"])
+            self.assertTrue(state["active"])
+            self.assertEqual(state["next_action"], "build")
+            self.assertEqual(state["recovery"]["attempts"], 1)
+            evidence = state["current_failure_evidence"]
+            self.assertEqual(evidence["failure_type"], "timeout")
+            self.assertTrue(any("time_budget" in item for item in evidence["evidence"]))
+            cleanup.assert_called_once_with("run")
+
     def test_recovery_fails_after_attempts_exhausted(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write_state(tmp, profile="terminal", phase="build", next_action="build")
@@ -140,6 +206,27 @@ class SchedulerTests(unittest.TestCase):
             self.assertTrue(any(event["type"] == "artifact_changed" for event in state["events"]))
             changes = state.get("artifact_changes", {})
             self.assertIn("created_by_builder.txt", changes.get("created", []))
+
+    def test_single_html_scope_removes_duplicate_and_temporary_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_state(tmp, profile="app-builder", phase="build", next_action="build")
+            state = load_state(path)
+            state["prompt"] = "Build a Pomodoro timer. Single HTML file."
+            save_state(path, state)
+
+            state = Scheduler(path, phase_runner=SingleHtmlScopeRunner()).step_once()
+            workspace = Path(tmp)
+
+            self.assertTrue((workspace / "pomodoro-timer.html").exists())
+            self.assertFalse((workspace / "pomodoro.html").exists())
+            self.assertFalse((workspace / "test_timer.js").exists())
+            self.assertFalse((workspace / "validation_complete.js").exists())
+            self.assertFalse((workspace / "pomodoro-timer-complete.md").exists())
+            self.assertFalse((workspace / "server.log").exists())
+            artifact_names = {item["name"] for item in state["artifacts"]["files"]}
+            self.assertIn("pomodoro-timer.html", artifact_names)
+            self.assertNotIn("pomodoro.html", artifact_names)
+            self.assertTrue(any(event["type"] == "artifact_scope_enforced" for event in state["events"]))
 
     def test_validation_hook_records_score_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,12 +351,44 @@ class SchedulerTests(unittest.TestCase):
     def test_analyze_phase_runs_memory_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write_state(tmp, profile="terminal", phase="analyze", next_action="analyze")
+            state = load_state(path)
+            state["score_history"] = [9.0]
+            state["validation"] = {"status": "verified"}
+            save_state(path, state)
 
             state = Scheduler(path, phase_runner=FakeRunner()).step_once()
 
             self.assertEqual(state["status"], "completed")
+            self.assertTrue(state["validated"])
             self.assertTrue(any(event["type"] == "before_memory_update" for event in state["events"]))
             self.assertTrue(any(event["type"] == "after_memory_update" for event in state["events"]))
+
+    def test_analyze_phase_requires_verified_validation_for_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_state(tmp, profile="terminal", phase="analyze", next_action="analyze")
+            state = load_state(path)
+            state["score_history"] = [9.0]
+            state["validation"] = {"status": "failed"}
+            save_state(path, state)
+
+            state = Scheduler(path, phase_runner=FakeRunner()).step_once()
+
+            self.assertEqual(state["status"], "error")
+            self.assertFalse(state["validated"])
+            self.assertEqual(state["last_error"]["type"], "ValidationFailed")
+            self.assertTrue(any(
+                event["type"] == "run_failed" and event["data"].get("task_success") is False
+                for event in state["events"]
+            ))
+
+    def test_completed_run_cleans_only_its_registered_processes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_state(tmp, profile="terminal", phase="analyze", next_action="analyze")
+
+            with patch("orchestrator.scheduler.tools.cleanup_run_processes") as cleanup:
+                Scheduler(path, phase_runner=FakeRunner()).step_once()
+
+            cleanup.assert_called_once_with("run")
 
     def _write_state(self, tmp, profile="terminal", phase="plan", next_action="plan", active=True):
         workspace = Path(tmp)

@@ -52,6 +52,42 @@ Harness AgentOS 关注的是 Agent 运行架构，而不是替代完整的研发
 - Benchmark 适配：Harbor / Terminal-Bench 2.0 风格任务
 - 测试：Python `unittest`
 
+## 配置项
+
+基础配置来自 `.env` 或环境变量：
+
+```bash
+OPENAI_API_KEY=sk-your-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
+HARNESS_MODEL=gpt-4o
+HARNESS_WORKSPACE=./workspace
+HARNESS_MEMORY_FILE=./.harness_memory.json
+```
+
+可选调参：
+
+```bash
+MAX_HARNESS_ROUNDS=5
+PASS_THRESHOLD=7.0
+COMPRESS_THRESHOLD=50000
+RESET_THRESHOLD=100000
+MAX_AGENT_ITERATIONS=500
+ENABLE_PARALLEL_TOOL_CALLS=0
+HARNESS_EVIDENCE_GUIDED_RECOVERY=1
+HARNESS_METRICS_ENABLED=1
+HARNESS_WEB_TERMINAL_ENABLED=0
+HARNESS_WEB_TERMINAL_TOKEN=
+```
+
+说明：
+
+- `COMPRESS_THRESHOLD` 达到后会压缩旧上下文。
+- `RESET_THRESHOLD` 达到后会通过 checkpoint 重建上下文。
+- `ENABLE_PARALLEL_TOOL_CALLS` 默认关闭，因为部分模型并行工具调用稳定性较差。
+- `HARNESS_EVIDENCE_GUIDED_RECOVERY` 默认开启；设为 `0` 可回到只依赖普通 feedback 的重试方式。
+- `HARNESS_METRICS_ENABLED` 默认开启，指标写入当前 run 的 `.harness/metrics.json`。
+- `HARNESS_WEB_TERMINAL_ENABLED` 默认关闭；启用 `/api/terminal/run` 时建议同时设置 `HARNESS_WEB_TERMINAL_TOKEN`。
+
 ## 5 分钟快速使用
 
 ### 1. 创建环境
@@ -249,7 +285,31 @@ workspace/<run_id>/harness_state.json
 - 任务路由、人工确认、hook、分析和记忆更新都有明确边界。
 - 每个 workspace 都保留 trace、反馈和分析结果，便于复盘。
 
+状态驱动 run 的最终状态由实际验收结果决定：有 evaluator 的 Profile 需要最新分数达到 `PASS_THRESHOLD`；带验证结果的任务还要求验证状态为 `verified`。未达到验收条件时，run 会以 `error`/`task_success=false` 结束，而不是仅因为流程走完就标记为成功。
+
 Hook 系统位于 `orchestrator/hooks.py`，负责阶段超时、心跳、预算、人工批准、验证结果、产物变化和记忆更新前后的事件记录。它不会替代核心 Agent 循环，而是在 Scheduler 阶段边界执行策略检查。
+
+### 运行隔离与离线回放
+
+状态驱动运行会为每个 run 安装独立的 `run_id` 和 workspace。Agent 启动的后台命令、dev server 和长时间命令会登记到当前 run，结束、失败或超时时只清理这个 run 自己创建的受管进程，避免误伤 Harness、benchmark runner、其他 run 或外部已有服务。
+
+进程清理按平台处理：Windows 使用受管 PID 的进程树清理，POSIX 使用独立 session/process group。命令 safeguard 会阻止全局终止 Python 的危险命令，例如 `taskkill /im python.exe`、`pkill -f python`、`killall python`。
+
+每个状态驱动 run 还会写入 `.harness/canonical_trace.jsonl`。它记录 Scheduler、LLM、Tool、Safeguard、workspace mutation 和 managed process 生命周期事件，可通过 `replay_trace()` 纯离线回放，不重新调用 LLM 或执行工具。
+
+离线回放会按 role/phase 汇总 calls、tokens 和状态变化，并校验终止事件、`task_success`、ID/序列、LLM/tool call ledger 和 token conservation。`compare_replays()` 可比较 baseline/candidate；不可比较或不完整的 trace 会给出明确原因。
+
+可以用 Fast Regression Gate 对 baseline/candidate 的 canonical trace 做离线回归检查：
+
+```bash
+python scripts/run_fast_regression_gate.py ^
+  --baseline workspace/baseline/.harness/canonical_trace.jsonl ^
+  --candidate workspace/candidate/.harness/canonical_trace.jsonl
+```
+
+Gate 只读取 trace，不执行工具或调用模型。结果为 `PASS`、`FAIL` 或 `INCONCLUSIVE`：它会先检查 trace 是否完整、样本是否可比较，再比较成功率、安全事件和每次成功的 tokens、LLM calls、agent rounds、wall time 等指标。
+
+核心文件：`orchestrator/run_context.py`、`tools.py`、`orchestrator/scheduler.py`、`orchestrator/canonical_trace.py`、`orchestrator/regression_gate.py`。
 
 ## 记忆系统
 
@@ -346,6 +406,7 @@ harness_state.json      状态驱动运行的状态文件
 _trace_<agent>.jsonl    每个 Agent 的结构化事件 trace
 .harness/orchestrator.db 当前 workspace 的状态快照和事件索引
 .harness/metrics.json   token、round、recovery 和 benchmark 汇总指标
+.harness/canonical_trace.jsonl 版本化的运行生命周期、LLM、工具和进程事件
 ```
 
 跨运行的默认记忆文件位于项目根目录：
@@ -354,36 +415,6 @@ _trace_<agent>.jsonl    每个 Agent 的结构化事件 trace
 .harness_memory.json
 ```
 
-## 配置项
-
-基础配置来自 `.env` 或环境变量：
-
-```bash
-OPENAI_API_KEY=sk-your-key-here
-OPENAI_BASE_URL=https://api.openai.com/v1
-HARNESS_MODEL=gpt-4o
-HARNESS_WORKSPACE=./workspace
-HARNESS_MEMORY_FILE=./.harness_memory.json
-```
-
-可选调参：
-
-```bash
-MAX_HARNESS_ROUNDS=5
-PASS_THRESHOLD=7.0
-COMPRESS_THRESHOLD=50000
-RESET_THRESHOLD=100000
-MAX_AGENT_ITERATIONS=500
-ENABLE_PARALLEL_TOOL_CALLS=0
-HARNESS_EVIDENCE_GUIDED_RECOVERY=1
-```
-
-说明：
-
-- `COMPRESS_THRESHOLD` 达到后会压缩旧上下文。
-- `RESET_THRESHOLD` 达到后会通过 checkpoint 重建上下文。
-- `ENABLE_PARALLEL_TOOL_CALLS` 默认关闭，因为部分模型并行工具调用稳定性较差。
-- `HARNESS_EVIDENCE_GUIDED_RECOVERY` 默认开启；设为 `0` 可回到只依赖普通 feedback 的重试方式。
 
 ## Terminal-Bench / Harbor
 

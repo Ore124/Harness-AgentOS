@@ -82,22 +82,27 @@ def _store_for_workspace(workspace: str | Path) -> OrchestratorStore:
 
 def load_state(path: str | Path) -> dict[str, Any]:
     """Load and validate a state file."""
+    started = time.perf_counter()
     state_path = Path(path)
-    with _path_lock(state_path):
-        try:
-            raw = state_path.read_text(encoding="utf-8")
-            state = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise StateError(f"Invalid JSON in state file {state_path}: {exc}") from exc
-        except OSError as exc:
-            raise StateError(f"Cannot read state file {state_path}: {exc}") from exc
+    try:
+        with _path_lock(state_path):
+            try:
+                raw = state_path.read_text(encoding="utf-8")
+                state = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise StateError(f"Invalid JSON in state file {state_path}: {exc}") from exc
+            except OSError as exc:
+                raise StateError(f"Cannot read state file {state_path}: {exc}") from exc
 
-    validate_state(state)
-    return state
+        validate_state(state)
+        return state
+    finally:
+        _record_state_io_latency(started)
 
 
 def save_state(path: str | Path, state: dict[str, Any]) -> None:
     """Atomically write state to disk using a same-directory temp file."""
+    started = time.perf_counter()
     state_copy = deepcopy(state)
     state_copy["updated_at"] = now_iso()
     validate_state(state_copy)
@@ -119,7 +124,10 @@ def save_state(path: str | Path, state: dict[str, Any]) -> None:
         finally:
             if os.path.exists(tmp_name):
                 os.unlink(tmp_name)
-    _store_for_workspace(state_copy["workspace"]).save_state(state_copy)
+    try:
+        _store_for_workspace(state_copy["workspace"]).save_state(state_copy)
+    finally:
+        _record_state_io_latency(started)
 
 
 def update_state(path: str | Path, mutator: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
@@ -192,3 +200,12 @@ def _replace_with_retry(tmp_name: str, state_path: Path) -> None:
             time.sleep(0.05)
     if last_error:
         raise last_error
+
+
+def _record_state_io_latency(started: float) -> None:
+    try:
+        import metrics
+
+        metrics.RECORDER.add_latency("state_file_io_ms", int((time.perf_counter() - started) * 1000))
+    except Exception:
+        pass
