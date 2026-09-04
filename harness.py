@@ -115,8 +115,13 @@ class Harness:
         ) if reviewer_cfg.enabled else None
         metrics.RECORDER.add_latency("agent_initialization_ms", int((time.perf_counter() - init_started) * 1000))
 
-    def run(self, user_prompt: str) -> None:
-        """Run through the scheduler while preserving the CLI entry point."""
+    def run(self, user_prompt: str) -> dict[str, object]:
+        """Run through the scheduler and return its final persisted state.
+
+        Existing callers that ignored the historical ``None`` return remain
+        compatible, while CLI and embedding callers can now distinguish a
+        completed run from a state-machine failure.
+        """
         from orchestrator.scheduler import Scheduler
         from orchestrator.state import create_run_state, save_state, state_path_for_workspace
 
@@ -138,7 +143,7 @@ class Harness:
         )
         state_path = state_path_for_workspace(config.WORKSPACE)
         save_state(state_path, state)
-        Scheduler(state_path).run_until_idle()
+        return Scheduler(state_path).run_until_idle()
 
     def _legacy_run(self, user_prompt: str) -> None:
         # Create a unique project subdirectory under workspace
@@ -416,13 +421,14 @@ def main():
         log.info(f"Resuming state-driven run from: {state_path}")
         scheduler = Scheduler(state_path)
         final_state = scheduler.run_until_idle()
-        if final_state.get("requires_confirmation"):
-            print("Profile confirmation required before execution can continue:")
-            print(final_state.get("route_decision"))
+        exit_code = _exit_code_for_final_state(final_state)
+        if exit_code == 2:
+            print("Run stopped before completion and requires user action:")
+            print(final_state.get("route_decision") or final_state.get("last_error"))
             sys.exit(2)
-        if final_state.get("status") == "error":
+        if exit_code != 0:
             print(f"Run failed: {final_state.get('last_error')}")
-            sys.exit(1)
+            sys.exit(exit_code)
         print(f"Run status: {final_state.get('status')}  workspace: {final_state.get('workspace')}")
         sys.exit(0)
 
@@ -500,7 +506,7 @@ def main():
 
     harness = Harness(profile)
     try:
-        harness.run(user_prompt)
+        final_state = harness.run(user_prompt)
     except KeyboardInterrupt:
         log.warning("Interrupted by user.")
         sys.exit(130)
@@ -508,6 +514,32 @@ def main():
         log.error(f"Harness crashed with unhandled exception: {e}", exc_info=True)
         # Exit 1 signals failure to Harbor, but at least we log the cause
         sys.exit(1)
+
+    exit_code = _exit_code_for_final_state(final_state)
+    if exit_code == 2:
+        print("Run stopped before completion and requires user action:")
+        print(final_state.get("route_decision") or final_state.get("last_error"))
+    elif exit_code != 0:
+        print(f"Run failed: {final_state.get('last_error')}")
+    else:
+        print(
+            f"Run status: {final_state.get('status')}  "
+            f"workspace: {final_state.get('workspace')}"
+        )
+    sys.exit(exit_code)
+
+
+def _exit_code_for_final_state(final_state: dict[str, object]) -> int:
+    """Map scheduler state to a process exit code at the CLI boundary."""
+    status = final_state.get("status")
+    if status == "completed":
+        return 0
+    if (
+        final_state.get("requires_confirmation")
+        or status in {"waiting_confirmation", "waiting_approval", "paused"}
+    ):
+        return 2
+    return 1
 
 
 def _resolve_resume_state_path(target: str) -> Path:

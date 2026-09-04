@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from orchestrator.analytics import list_artifacts
+from orchestrator.canonical_trace import writer_for
 from agents import AgentRunResult
 from orchestrator.scheduler import (
     PhaseExecutionError,
@@ -355,6 +356,15 @@ class SchedulerTests(unittest.TestCase):
             state["score_history"] = [9.0]
             state["validation"] = {"status": "verified"}
             save_state(path, state)
+            writer = writer_for(tmp, "run")
+            writer.emit(
+                "tool_requested",
+                {"tool_call_id": "verified", "tool": "run_bash", "command": "python -m pytest"},
+            )
+            writer.emit(
+                "tool_completed",
+                {"tool_call_id": "verified", "tool": "run_bash", "success": True, "exit_code": 0},
+            )
 
             state = Scheduler(path, phase_runner=FakeRunner()).step_once()
 

@@ -87,10 +87,14 @@ class TraceWriter:
         })
 
     def tool_call(self, name: str, args: dict, result: str):
+        outcome = tools.classify_tool_result(result, name)
         self._write("tool_call", {
             "tool": name,
             "args": _truncate(json.dumps(args, ensure_ascii=False), 300),
             "result": _truncate(result, 500),
+            "success": outcome.success,
+            "failure_kind": outcome.failure_kind,
+            "exit_code": outcome.exit_code,
         })
 
     def middleware_inject(self, source: str, hook: str, message: str):
@@ -531,8 +535,16 @@ class Agent:
                 _canonical_emit(run_id, "tool_started", {"tool_call_id": tool_call_id, "tool": fn_name}, role=self.name, phase=phase)
                 tool_started = time.perf_counter()
                 result = tools.execute_tool(fn_name, fn_args)
-                tool_payload = {"tool_call_id": tool_call_id, "tool": fn_name, "latency_ms": int((time.perf_counter() - tool_started) * 1000)}
-                _canonical_emit(run_id, "tool_failed" if str(result).lstrip().lower().startswith("[error]") else "tool_completed", tool_payload, role=self.name, phase=phase)
+                outcome = tools.classify_tool_result(result, fn_name)
+                tool_payload = {
+                    "tool_call_id": tool_call_id,
+                    "tool": fn_name,
+                    "latency_ms": int((time.perf_counter() - tool_started) * 1000),
+                    "success": outcome.success,
+                    "failure_kind": outcome.failure_kind,
+                    "exit_code": outcome.exit_code,
+                }
+                _canonical_emit(run_id, "tool_completed" if outcome.success else "tool_failed", tool_payload, role=self.name, phase=phase)
                 metrics.RECORDER.record_tool_call(
                     role=self.name,
                     phase=phase,

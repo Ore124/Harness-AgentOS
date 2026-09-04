@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "description": "Acceptance-controller A/B fixtures. target_repair_rounds describes intended difficulty, not a guaranteed observed round count.",
+  "scenarios": [
+    {
+      "id": "inventory-multifile",
+      "suites": ["smoke", "full"],
+      "categories": ["multi_file", "repair_candidate"],
+      "profile": "terminal",
+      "prompt": "Repair the inventory package without changing the tests. Implement normalization, atomic stock updates, and reorder reporting across the existing files. Run {python} -m pytest -q and do not stop until it passes.",
+      "setup_files": {
+        "inventory/__init__.py": "from .service import Inventory\n",
+        "inventory/models.py": "from dataclasses import dataclass\n\n@dataclass\nclass Item:\n    sku: str\n    quantity: int\n    reorder_at: int = 0\n\n    def normalized(self):\n        return Item(self.sku, self.quantity, self.reorder_at)\n",
+        "inventory/service.py": "from .models import Item\n\nclass Inventory:\n    def __init__(self, items=()):\n        self._items = {item.sku: item for item in items}\n\n    def adjust(self, sku, delta):\n        item = self._items[sku]\n        item.quantity += delta\n        return item.quantity\n\n    def needs_reorder(self):\n        return []\n",
+        "tests/test_inventory.py": "import pytest\nfrom inventory.models import Item\nfrom inventory.service import Inventory\n\ndef test_skus_are_normalized_and_updates_are_atomic():\n    store = Inventory([Item(' ab-1 ', 2, 1)])\n    assert store.adjust('AB-1', -1) == 1\n    with pytest.raises(ValueError):\n        store.adjust('AB-1', -2)\n    assert store.adjust('AB-1', 0) == 1\n\ndef test_reorder_report_is_sorted_and_detached():\n    store = Inventory([Item('b', 1, 1), Item('a', 0, 2), Item('c', 4, 1)])\n    report = store.needs_reorder()\n    assert [item.sku for item in report] == ['A', 'B']\n    report[0].quantity = 99\n    assert store.adjust('A', 0) == 0\n"
+      },
+      "acceptance_command": ["{python}", "-m", "pytest", "-q"],
+      "timeout_seconds": 420,
+      "target_repair_rounds": [1, 3],
+      "environment": {"PROFILE_TERMINAL_MAX_ROUNDS": "4"}
+    },
+    {
+      "id": "jsonl-pipeline-cli",
+      "suites": ["smoke", "full"],
+      "categories": ["cli", "data_pipeline", "multi_file"],
+      "profile": "terminal",
+      "prompt": "Complete the JSONL pipeline CLI. It must stream valid records, count malformed lines, filter by minimum score, and emit deterministic compact JSON. Preserve the public interfaces and make all tests pass with {python} -m pytest -q.",
+      "setup_files": {
+        "jsonpipe/__init__.py": "",
+        "jsonpipe/core.py": "import json\n\ndef transform(lines, minimum=0):\n    # TODO: return (records, malformed_count)\n    return [], 0\n",
+        "jsonpipe/cli.py": "import argparse\nfrom .core import transform\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser()\n    parser.add_argument('source')\n    parser.add_argument('--min-score', type=int, default=0)\n    parser.add_argument('--errors')\n    args = parser.parse_args(argv)\n    return 0\n\nif __name__ == '__main__':\n    raise SystemExit(main())\n",
+        "tests/test_jsonpipe.py": "import json\nfrom jsonpipe.core import transform\nfrom jsonpipe.cli import main\n\ndef test_transform_filters_sorts_and_counts_bad_lines():\n    rows, bad = transform(['{\"id\":\"b\",\"score\":3}', 'bad', '{\"id\":\"a\",\"score\":7}', '{\"id\":\"x\"}'], 3)\n    assert bad == 2\n    assert rows == [{'id':'a','score':7}, {'id':'b','score':3}]\n\ndef test_cli_writes_jsonl_and_error_count(tmp_path, capsys):\n    source = tmp_path / 'in.jsonl'\n    errors = tmp_path / 'errors.txt'\n    source.write_text('{\"id\":\"b\",\"score\":2}\\nnope\\n{\"id\":\"a\",\"score\":9}\\n', encoding='utf-8')\n    assert main([str(source), '--min-score', '2', '--errors', str(errors)]) == 0\n    assert capsys.readouterr().out.splitlines() == ['{\"id\":\"a\",\"score\":9}', '{\"id\":\"b\",\"score\":2}']\n    assert errors.read_text(encoding='utf-8') == '1\\n'\n"
+      },
+      "acceptance_command": ["{python}", "-m", "pytest", "-q"],
+      "timeout_seconds": 420,
+      "target_repair_rounds": [1, 3],
+      "environment": {"PROFILE_TERMINAL_MAX_ROUNDS": "4"}
+    },
+    {
+      "id": "config-migration",
+      "suites": ["smoke", "full"],
+      "categories": ["migration", "compatibility", "repair_candidate"],
+      "profile": "terminal",
+      "prompt": "Fix migrate.py to migrate version-1 application configs to version 3, preserving unknown keys and remaining idempotent. Do not mutate the input. Use the tests as the contract and run {python} -m pytest -q.",
+      "setup_files": {
+        "migrate.py": "def migrate(config):\n    config['version'] = 3\n    config['service'] = {'retries': config.pop('retry', 0)}\n    return config\n",
+        "tests/test_migrate.py": "from migrate import migrate\n\ndef test_migrates_legacy_fields_without_mutation():\n    original = {'version':1, 'retry':4, 'timeout_ms':2500, 'feature_x':True}\n    result = migrate(original)\n    assert original == {'version':1, 'retry':4, 'timeout_ms':2500, 'feature_x':True}\n    assert result == {'version':3, 'service':{'retry':{'attempts':4}, 'timeout_seconds':2.5}, 'feature_x':True}\n\ndef test_version_two_and_three_are_supported_idempotently():\n    v2 = {'version':2, 'service':{'retries':2, 'timeout':1.25}, 'tag':'x'}\n    expected = {'version':3, 'service':{'retry':{'attempts':2}, 'timeout_seconds':1.25}, 'tag':'x'}\n    assert migrate(v2) == expected\n    assert migrate(expected) == expected\n"
+      },
+      "acceptance_command": ["{python}", "-m", "pytest", "-q"],
+      "timeout_seconds": 420,
+      "target_repair_rounds": [2, 4],
+      "environment": {"PROFILE_TERMINAL_MAX_ROUNDS": "5"}
+    },
+    {
+      "id": "retry-circuit-breaker",
+      "suites": ["smoke", "full"],
+      "categories": ["state_machine", "retry", "multi_repair_candidate"],
+      "profile": "terminal",
+      "prompt": "Implement the RetryCircuit in retrying.py according to its tests: exact attempt limits, exponential delays, opening after consecutive failed calls, and half-open recovery. Keep it deterministic through the injected clock/sleeper. Run {python} -m pytest -q.",
+      "setup_files": {
+        "retrying.py": "class CircuitOpen(RuntimeError):\n    pass\n\nclass RetryCircuit:\n    def __init__(self, attempts=3, base_delay=0.1, failure_threshold=2, reset_after=5.0, clock=None, sleep=None):\n        self.attempts = attempts\n        self.base_delay = base_delay\n        self.failure_threshold = failure_threshold\n        self.reset_after = reset_after\n        self.clock = clock\n        self.sleep = sleep\n\n    def call(self, function):\n        return function()\n",
+        "tests/test_retrying.py": "import pytest\nfrom retrying import CircuitOpen, RetryCircuit\n\nclass Time:\n    def __init__(self): self.now = 0.0; self.delays = []\n    def clock(self): return self.now\n    def sleep(self, value): self.delays.append(value)\n\ndef test_retry_delays_and_attempt_limit():\n    t = Time(); circuit = RetryCircuit(attempts=3, base_delay=.5, clock=t.clock, sleep=t.sleep)\n    calls=[]\n    def work():\n        calls.append(1)\n        if len(calls) < 3: raise ValueError('x')\n        return 'ok'\n    assert circuit.call(work) == 'ok'\n    assert len(calls) == 3 and t.delays == [.5, 1.0]\n\ndef test_open_half_open_and_recovery():\n    t=Time(); circuit=RetryCircuit(attempts=1, failure_threshold=2, reset_after=5, clock=t.clock, sleep=t.sleep)\n    def bad(): raise ValueError('x')\n    for _ in range(2):\n        with pytest.raises(ValueError): circuit.call(bad)\n    with pytest.raises(CircuitOpen): circuit.call(lambda:'blocked')\n    t.now=5\n    assert circuit.call(lambda:'ok') == 'ok'\n    assert circuit.call(lambda:'still-ok') == 'still-ok'\n"
+      },
+      "acceptance_command": ["{python}", "-m", "pytest", "-q"],
+      "timeout_seconds": 480,
+      "target_repair_rounds": [2, 5],
+      "environment": {"PROFILE_TERMINAL_MAX_ROUNDS": "5"}
+    },
+    {
+      "id": "dependency-graph-scheduler",
+      "suites": ["smoke", "full"],
+      "categories": ["graph", "scheduler", "edge_cases"],
+      "profile": "terminal",
+      "prompt": "Complete graph_scheduler.py. Produce deterministic execution waves, reject missing dependencies, and report an explicit cycle path. Do not modify tests. Verify with {python} -m pytest -q.",
+      "setup_files": {
+        "graph_scheduler.py": "class GraphError(ValueError):\n    pass\n\ndef execution_waves(tasks):\n    return [sorted(tasks)]\n",
+        "tests/test_graph_scheduler.py": "import pytest\nfrom graph_scheduler import GraphError, execution_waves\n\ndef test_deterministic_parallel_waves():\n    tasks={'fetch':[], 'parse':['fetch'], 'audit':['fetch'], 'save':['parse','audit'], 'notify':['save']}\n    assert execution_waves(tasks) == [['fetch'], ['audit','parse'], ['save'], ['notify']]\n\ndef test_missing_dependency():\n    with pytest.raises(GraphError, match='missing.*unknown'):\n        execution_waves({'build':['unknown']})\n\ndef test_cycle_includes_path():\n    with pytest.raises(GraphError, match=r'a.*b.*c.*a'):\n        execution_waves({'a':['b'], 'b':['c'], 'c':['a']})\n"
+      },
+      "acceptance_command": ["{python}", "-m", "pytest", "-q"],
+      "timeout_seconds": 420,
+      "target_repair_rounds": [1, 4],
+      "environment": {"PROFILE_TERMINAL_MAX_ROUNDS": "5"}
+    },
+    {
+      "id": "delegated-reporting-modules",
+      "suites": ["full"],
+      "categories": ["delegation", "multi_file", "integration"],
+      "profile": "app-builder",
+      "prompt": "Finish the reporting package and tests. The csv parser and aggregation modules are independent, so delegate them to separate sub-agents, then integrate the renderer yourself. The final acceptance command is {python} -m pytest -q.",
+      "setup_files": {
+        "reporting/__init__.py": "",
+        "reporting/parser.py": "def parse_rows(text):\n    raise NotImplementedError\n",
+        "reporting/aggregate.py": "def totals(rows):\n    raise NotImplementedError\n",
+        "reporting/render.py": "def render_report(text):\n    raise NotImplementedError\n",
+        "tests/test_reporting.py": "from reporting.parser import parse_rows\nfrom reporting.aggregate import totals\nfrom reporting.render import render_report\n\nDATA='team,amount\\nblue,2\\nred,5\\nblue,3\\n'\n\ndef test_units_and_integration():\n    rows=parse_rows(DATA)\n    assert rows == [{'team':'blue','amount':2}, {'team':'red','amount':5}, {'team':'blue','amount':3}]\n    assert totals(rows) == {'blue':5, 'red':5}\n    assert render_report(DATA) == 'blue: 5\\nred: 5\\n'\n"
+      },
+      "acceptance_command": ["{python}", "-m", "pytest", "-q"],
+      "timeout_seconds": 900,
+      "target_repair_rounds": [1, 4],
+      "environment": {}
+    },
+    {
+      "id": "resume-file-manifest",
+      "suites": ["full"],
+      "categories": ["resume", "state_recovery", "multi_file"],
+      "profile": "terminal",
+      "prompt": "Implement manifest.py and its CLI. Recursively hash regular files, exclude output/cache paths, normalize slash separators, and write sorted deterministic JSON. Run {python} -m pytest -q before finishing.",
+      "setup_files": {
+        "manifest.py": "import json\n\ndef build_manifest(root, output=None):\n    raise NotImplementedError\n",
+        "tests/test_manifest.py": "import hashlib, json\nfrom pathlib import Path\nfrom manifest import build_manifest\n\ndef test_manifest_is_sorted_excludes_output_and_is_stable(tmp_path):\n    (tmp_path/'z.txt').write_text('z', encoding='utf-8')\n    (tmp_path/'a').mkdir(); (tmp_path/'a'/'x.txt').write_text('x', encoding='utf-8')\n    out=tmp_path/'manifest.json'\n    result=build_manifest(tmp_path, out)\n    expected=[{'path':'a/x.txt','sha256':hashlib.sha256(b'x').hexdigest(),'size':1},{'path':'z.txt','sha256':hashlib.sha256(b'z').hexdigest(),'size':1}]\n    assert result == expected\n    assert json.loads(out.read_text(encoding='utf-8')) == expected\n    assert build_manifest(tmp_path, out) == expected\n"
+      },
+      "acceptance_command": ["{python}", "-m", "pytest", "-q"],
+      "timeout_seconds": 600,
+      "target_repair_rounds": [1, 4],
+      "resume": {"interrupt_after_seconds": 12},
+      "environment": {"PROFILE_TERMINAL_MAX_ROUNDS": "5"}
+    },
+    {
+      "id": "budget-bounded-manifest",
+      "suites": ["full"],
+      "categories": ["budget", "deadline", "cli"],
+      "profile": "terminal",
+      "prompt": "Under the configured short task budget, finish file_index.py: scan .txt files recursively, return stable relative paths and line counts, and expose a JSON CLI. Prioritize running {python} -m pytest -q as the acceptance check.",
+      "setup_files": {
+        "file_index.py": "def index_text_files(root):\n    return []\n\ndef main(argv=None):\n    return 1\n",
+        "tests/test_file_index.py": "import json\nfrom file_index import index_text_files, main\n\ndef test_index_and_cli(tmp_path, capsys):\n    (tmp_path/'b.txt').write_text('one\\ntwo\\n', encoding='utf-8')\n    (tmp_path/'a').mkdir(); (tmp_path/'a'/'x.txt').write_text('x', encoding='utf-8')\n    (tmp_path/'skip.bin').write_bytes(b'x')\n    assert index_text_files(tmp_path) == [{'path':'a/x.txt','lines':1},{'path':'b.txt','lines':2}]\n    assert main([str(tmp_path)]) == 0\n    assert json.loads(capsys.readouterr().out) == [{'path':'a/x.txt','lines':1},{'path':'b.txt','lines':2}]\n"
+      },
+      "acceptance_command": ["{python}", "-m", "pytest", "-q"],
+      "timeout_seconds": 120,
+      "target_repair_rounds": [1, 2],
+      "environment": {"PROFILE_TERMINAL_TASK_BUDGET": "90", "PROFILE_TERMINAL_MAX_ROUNDS": "2"}
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import metrics
 from orchestrator.canonical_trace import compare_replays, replay_trace, writer_for
@@ -96,7 +97,15 @@ class CanonicalTraceTests(unittest.TestCase):
             state = create_run_state("deterministic task", root, profile="terminal", run_id="scheduler-trace")
             path = state_path_for_workspace(root)
             save_state(path, state)
-            completed = Scheduler(path, phase_runner=Runner()).run_until_idle(poll_interval=0)
+            # This fixture exercises canonical scheduler tracing without
+            # emitting agent/tool verification evidence. Keep it on the
+            # legacy policy; acceptance behavior has dedicated integration
+            # coverage with real canonical verification events.
+            with patch(
+                "orchestrator.scheduler.config.HARNESS_ACCEPTANCE_PROGRESS_CONTROLLER",
+                False,
+            ):
+                completed = Scheduler(path, phase_runner=Runner()).run_until_idle(poll_interval=0)
             replay = replay_trace(Path(root) / ".harness" / "canonical_trace.jsonl")
 
         self.assertEqual(completed["status"], "completed")

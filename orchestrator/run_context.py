@@ -12,6 +12,7 @@ class RunContext:
     workspace: Path
     trace_dir: Path
     allow_terminal: bool = False
+    task_id: str | None = None
 
     @classmethod
     def from_state(cls, state: dict, *, allow_terminal: bool = False) -> "RunContext":
@@ -22,6 +23,7 @@ class RunContext:
             workspace=workspace,
             trace_dir=workspace / ".harness" / "traces",
             allow_terminal=allow_terminal,
+            task_id=state.get("task_id"),
         )
 
     @contextmanager
