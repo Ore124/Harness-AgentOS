@@ -90,26 +90,59 @@ class TerminalProfile(BaseProfile):
                 cls._tb2_tasks = {}
         return cls._tb2_tasks
 
-    def resolve_task_timeout(self, user_prompt: str) -> float | None:
-        """Look up TB2 task timeout by matching task name in prompt or workspace path."""
-        meta = self._lookup_task_meta(user_prompt)
+    def resolve_task_timeout(
+        self,
+        user_prompt: str,
+        task_id: str | None = None,
+    ) -> float | None:
+        """Look up a TB2 task timeout, preferring an explicit task identity."""
+        meta = self._lookup_task_meta(user_prompt, task_id=task_id)
         return meta.get("agent_timeout_sec") if meta else None
 
-    def _lookup_task_meta(self, user_prompt: str) -> dict | None:
+    def resolve_task_budget(
+        self,
+        user_prompt: str,
+        task_id: str | None = None,
+    ) -> float:
+        """Resolve the single total budget used by all terminal phases."""
+        timeout = self.resolve_task_timeout(user_prompt, task_id=task_id)
+        return float(timeout if timeout is not None else self._get("task_budget"))
+
+    def _lookup_task_meta(
+        self,
+        user_prompt: str,
+        task_id: str | None = None,
+    ) -> dict | None:
         """Look up full TB2 task metadata (timeout, difficulty, category)."""
         tasks = self._load_tb2_tasks()
         if not tasks:
             return None
 
+        # Harbor provides the dataset task name explicitly. Match it before
+        # workspace/prompt heuristics so unrelated names in the instruction
+        # cannot select the wrong task metadata.
+        if task_id:
+            normalized_id = str(task_id).strip().lower()
+            candidates = {
+                normalized_id,
+                normalized_id.rstrip("/").rsplit("/", 1)[-1],
+                normalized_id.rstrip("/").rsplit(":", 1)[-1],
+            }
+            for candidate in candidates:
+                if candidate in tasks:
+                    return tasks[candidate]
+
         # Check workspace path first (most reliable)
         ws_lower = str(_tools.current_workspace()).lower()
-        for task_name, meta in tasks.items():
+        for task_name in sorted(tasks, key=len, reverse=True):
+            meta = tasks[task_name]
             if task_name in ws_lower:
                 return meta
 
         # Check user prompt
         prompt_lower = user_prompt.lower()
-        for task_name, meta in tasks.items():
+        for task_name in sorted(tasks, key=len, reverse=True):
+            meta = tasks[task_name]
             if len(task_name) > 6 and (
                 task_name in prompt_lower or
                 task_name.replace("-", " ") in prompt_lower or
@@ -119,7 +152,11 @@ class TerminalProfile(BaseProfile):
 
         return None
 
-    def resolve_time_allocation(self, user_prompt: str) -> dict:
+    def resolve_time_allocation(
+        self,
+        user_prompt: str,
+        task_id: str | None = None,
+    ) -> dict:
         """Dynamic time allocation based on TB2 task timeout and difficulty.
 
         Key insight from TB2 leaderboard analysis: top agents (ForgeCode, Letta,
@@ -135,8 +172,12 @@ class TerminalProfile(BaseProfile):
         - > 1800s: Keep planner (complex tasks benefit from decomposition).
                     Evaluator enabled for multi-round correction.
         """
-        meta = self._lookup_task_meta(user_prompt)
-        timeout = meta.get("agent_timeout_sec") if meta else self._get("task_budget")
+        meta = self._lookup_task_meta(user_prompt, task_id=task_id)
+        timeout = (
+            meta.get("agent_timeout_sec")
+            if meta
+            else self.resolve_task_budget(user_prompt, task_id=task_id)
+        )
         difficulty = meta.get("difficulty", "medium") if meta else "medium"
 
         if timeout <= 900:

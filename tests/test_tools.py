@@ -12,6 +12,7 @@ class ToolTests(unittest.TestCase):
 
         tools._processes_by_run.clear()
         tools._dev_server_procs_by_run.clear()
+        tools._windows_jobs_by_process.clear()
 
     def test_cleanup_only_terminates_processes_registered_to_requested_run(self):
         import tools
@@ -98,6 +99,7 @@ class ToolTests(unittest.TestCase):
                 config.WORKSPACE = tmp
                 result = tools.run_bash("python -c \"print('ok')\"")
                 self.assertEqual(result, "ok")
+                self.assertFalse(tools._windows_jobs_by_process)
             finally:
                 config.WORKSPACE = old_workspace
 
@@ -196,6 +198,52 @@ class ToolTests(unittest.TestCase):
         terminate.assert_called_once_with(proc)
         self.assertEqual(result, "Stopped 1 background command(s)")
 
+    @unittest.skipUnless(__import__("os").name == "nt", "Windows Job Object behavior")
+    def test_windows_job_cleanup_is_scoped_to_registered_process(self):
+        import tools
+
+        first = mock.Mock()
+        first.poll.return_value = None
+        second = mock.Mock()
+        second.poll.return_value = None
+        tools._windows_jobs_by_process[first] = 101
+        tools._windows_jobs_by_process[second] = 202
+
+        with mock.patch("ctypes.WinDLL") as win_dll, \
+             mock.patch.object(tools, "_close_windows_handle") as close_handle:
+            kernel32 = win_dll.return_value
+            kernel32.TerminateJobObject.return_value = 1
+            tools._terminate_process_tree(first)
+
+        kernel32.TerminateJobObject.assert_called_once_with(101, 1)
+        close_handle.assert_called_once_with(101)
+        first.wait.assert_called_once_with(timeout=5)
+        self.assertNotIn(first, tools._windows_jobs_by_process)
+        self.assertEqual(tools._windows_jobs_by_process.pop(second), 202)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "Windows Job Object behavior")
+    def test_windows_job_assignment_failure_closes_handle_and_keeps_pid_fallback(self):
+        import tools
+
+        proc = mock.Mock()
+        proc._handle = 303
+        with mock.patch.object(tools, "_create_windows_kill_job", return_value=404), \
+             mock.patch.object(tools, "_close_windows_handle") as close_handle, \
+             mock.patch("ctypes.WinDLL") as win_dll:
+            win_dll.return_value.AssignProcessToJobObject.return_value = 0
+            attached = tools._attach_windows_process_job(proc)
+
+        self.assertFalse(attached)
+        close_handle.assert_called_once_with(404)
+        self.assertNotIn(proc, tools._windows_jobs_by_process)
+
+        proc.pid = 505
+        proc.poll.return_value = None
+        with mock.patch.object(tools.subprocess, "run") as taskkill:
+            tools._terminate_process_tree(proc)
+
+        self.assertEqual(taskkill.call_args.args[0], ["taskkill", "/PID", "505", "/T", "/F"])
+
     def test_run_bash_trailing_ampersand_starts_background_process(self):
         import config
         import tools
@@ -229,9 +277,14 @@ class ToolTests(unittest.TestCase):
                 elapsed = time.time() - started
                 self.assertLess(elapsed, 2)
                 self.assertIn("Started background command", result)
+                proc = tools._background_procs[-1]
+                if __import__("os").name == "nt":
+                    self.assertIn(proc, tools._windows_jobs_by_process)
             finally:
                 config.WORKSPACE = old_workspace
                 tools.stop_background_commands()
+                if "proc" in locals():
+                    self.assertNotIn(proc, tools._windows_jobs_by_process)
 
     def test_browser_preflight_fails_fast_when_server_unreachable(self):
         import tools

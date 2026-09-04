@@ -289,7 +289,13 @@ class MetricsRecorder:
     ) -> None:
         if not enabled() or not self.data:
             return
-        success = not str(result).lstrip().lower().startswith("[error]")
+        # Lazy import avoids pulling the orchestration package into metrics
+        # module initialization while keeping one shared result protocol.
+        from tools import classify_tool_result
+
+        outcome = classify_tool_result(result, tool_name)
+        success = outcome.success
+        result_text = result if isinstance(result, str) else str(result)
         key = json.dumps([role, tool_name, arguments], sort_keys=True, default=str)
         self._tool_call_keys[key] = self._tool_call_keys.get(key, 0) + 1
         if self._tool_call_keys[key] == 2:
@@ -297,16 +303,18 @@ class MetricsRecorder:
             repeated_tool_call = True
         else:
             repeated_tool_call = self._tool_call_keys[key] > 2
-        failure_evidence = _contains_failure_evidence(result)
-        workspace_modified = name_mutates_workspace(tool_name, result)
+        failure_evidence = _contains_failure_evidence(result_text)
+        workspace_modified = name_mutates_workspace(tool_name, result_text)
         self.data.setdefault("tool_calls", []).append({
             "role": role,
             "phase": phase,
             "tool_name": tool_name,
             "tool_latency_ms": latency_ms,
-            "result_size_chars": len(result),
-            "result_estimated_tokens": _estimate_tokens(result),
+            "result_size_chars": len(result_text),
+            "result_estimated_tokens": _estimate_tokens(result_text),
             "success": success,
+            "failure_kind": outcome.failure_kind,
+            "exit_code": outcome.exit_code,
             "workspace_modified": workspace_modified,
             "failure_evidence_found": failure_evidence,
             "repeated_tool_call": repeated_tool_call,

@@ -41,15 +41,18 @@ def create_run_state(
     profile: str = "auto",
     run_id: str | None = None,
     max_rounds: int | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     """Create the initial persisted state for a run."""
     created_at = now_iso()
     run_id = run_id or datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     workspace_path = str(Path(workspace).resolve())
+    resolved_task_id = task_id if task_id is not None else os.environ.get("HARNESS_TASK_ID")
     return {
         "version": STATE_VERSION,
         "run_id": run_id,
         "prompt": prompt,
+        "task_id": resolved_task_id,
         "workspace": workspace_path,
         "profile": profile,
         "route_decision": None,
@@ -63,6 +66,10 @@ def create_run_state(
         "score_history": [],
         "agents": {},
         "artifacts": {},
+        "acceptance_progress": None,
+        "acceptance_decision": None,
+        "acceptance_fingerprint": None,
+        "acceptance_observation_seq": 0,
         "memory_refs": [],
         "events": [],
         "last_event_at": created_at,

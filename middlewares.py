@@ -183,7 +183,7 @@ class PreExitVerificationMiddleware(AgentMiddleware):
     Three-level exit gate:
     1. First exit attempt with NO tool calls ever made → force agent to start working
     2. First exit attempt after some work → force verification pass
-    3. Second exit attempt after verification → allow exit
+    3. Exit after a successful concrete verification command → allow exit
 
     This prevents the "3-second exit" problem where weak models return text
     without calling any tools, and PreExitVerification lets them go after
@@ -191,10 +191,39 @@ class PreExitVerificationMiddleware(AgentMiddleware):
     """
 
     def __init__(self, verification_prompt: str | None = None,
-                 include_task_requirements: bool = True):
+                 include_task_requirements: bool = True,
+                 max_verification_nudges: int = 3):
         self._exit_attempts = 0
         self._verification_prompt = verification_prompt
         self._include_task_requirements = include_task_requirements
+        self._max_verification_nudges = max(1, int(max_verification_nudges))
+        self._verification_required = False
+        self._verification_attempted = False
+        self._verification_passed = False
+        self._last_verification_result = ""
+
+    def post_tool(self, tool_name: str, tool_args: dict, result: str,
+                  messages: list[dict]) -> str | None:
+        """Track concrete verification and invalidate it after direct edits."""
+        from orchestrator.verification import is_verification_tool_call
+        import tools as _tools
+
+        outcome = _tools.classify_tool_result(result, tool_name)
+        if (
+            tool_name in {"write_file", "edit_file", "delegate_task"}
+            and outcome.success
+        ):
+            self._verification_passed = False
+            self._verification_attempted = False
+            self._last_verification_result = ""
+
+        if not is_verification_tool_call(tool_name, tool_args):
+            return None
+
+        self._verification_attempted = True
+        self._verification_passed = outcome.success
+        self._last_verification_result = str(result or "")[-500:]
+        return None
 
     @staticmethod
     def _has_done_work(messages: list[dict]) -> bool:
@@ -285,8 +314,16 @@ class PreExitVerificationMiddleware(AgentMiddleware):
             log.error("Pre-exit: agent refused to work after 3 attempts")
             return None
 
-        # Gate 2: Agent has done work, first exit → force verification
-        if self._exit_attempts == 1:
+        # Reuse a proactive successful test when no direct file mutation
+        # occurred after it. Expensive suites should not be rerun merely to
+        # satisfy the middleware protocol.
+        if self._verification_passed:
+            log.info("Pre-exit verification: existing concrete verification passed")
+            return None
+
+        # Gate 2: Agent has done work, first exit → force verification.
+        if not self._verification_required:
+            self._verification_required = True
             log.info("Pre-exit verification: forcing verification pass")
 
             parts = []
@@ -330,9 +367,35 @@ class PreExitVerificationMiddleware(AgentMiddleware):
 
             return "\n".join(parts)
 
-        # Gate 3: Agent has done work and verified → allow exit
-        log.info("Pre-exit verification: agent verified, allowing exit")
-        return None
+        # Gate 3: only a successful, machine-checkable verification action
+        # satisfies the gate. Exploratory commands such as `ls` do not.
+        verification_nudges = self._exit_attempts - 1
+        if verification_nudges >= self._max_verification_nudges:
+            log.error(
+                "Pre-exit verification: no successful verification after %s nudges",
+                verification_nudges,
+            )
+            return None
+
+        if self._verification_attempted:
+            log.warning("Pre-exit verification failed; requiring a fix and rerun")
+            detail = (
+                f"\nLast verification result:\n{self._last_verification_result}"
+                if self._last_verification_result else ""
+            )
+            return (
+                "[SYSTEM] VERIFICATION FAILED. Fix the failure, then rerun a concrete "
+                "test or assertion command. Do not finish until that command exits "
+                f"successfully.{detail}"
+            )
+
+        log.warning("Pre-exit verification missing; requiring a concrete check")
+        return (
+            "[SYSTEM] VERIFICATION IS STILL MISSING. Reading files or listing the "
+            "workspace is not verification. Run a concrete test or machine-checkable "
+            "assertion now (for example pytest, the project test script, `test ...`, "
+            "or `diff ...`)."
+        )
 
 
 # ---------------------------------------------------------------------------

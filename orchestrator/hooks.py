@@ -335,26 +335,28 @@ def _count_trace_tool_calls(workspace: Path) -> int:
 
 def _validation_summary(state: dict[str, Any], analysis: dict[str, Any] | None) -> dict[str, Any]:
     analysis = analysis or {}
-    by_tool = (analysis.get("tool_calls") or {}).get("by_tool", {})
     scores = analysis.get("scores") or state.get("score_history") or []
-    feedback = str(analysis.get("feedback_preview", ""))
     trace_text = json.dumps(analysis.get("agents", {}), ensure_ascii=False).lower()
-    evidence = []
+    verification = analysis.get("verification") or {}
+    latest_attempt = verification.get("latest")
+    evidence: list[str] = []
 
-    if by_tool.get("browser_test"):
-        evidence.append("browser_test")
-    if by_tool.get("run_bash"):
-        evidence.append("run_bash")
     if scores:
         evidence.append("score")
-    if any(term in feedback.lower() for term in ["verification", "test", "passed", "failed"]):
-        evidence.append("feedback")
+    if latest_attempt:
+        evidence.append(
+            f"{latest_attempt.get('tool', 'tool')}:"
+            f"{'passed' if latest_attempt.get('success') else 'failed'}"
+        )
 
-    failed = any(term in feedback.lower() for term in ["failed", "error", "traceback", "exception"])
-    if failed:
-        status = "failed"
-    elif evidence:
+    # A normalized evaluator score is already concrete validation evidence.
+    # Pass/fail threshold enforcement remains Scheduler._task_success's job.
+    if scores:
         status = "verified"
+    elif latest_attempt and latest_attempt.get("success"):
+        status = "verified"
+    elif latest_attempt:
+        status = "failed"
     elif state.get("profile") == "reasoning":
         status = "not_required"
     else:
@@ -364,6 +366,7 @@ def _validation_summary(state: dict[str, Any], analysis: dict[str, Any] | None) 
         "status": status,
         "evidence": evidence,
         "scores": scores,
+        "latest_attempt": latest_attempt,
         "trace_agents": sorted((analysis.get("agents") or {}).keys()),
         "trace_summary": trace_text[:300],
     }

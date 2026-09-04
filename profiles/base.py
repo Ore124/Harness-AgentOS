@@ -20,6 +20,7 @@ Configuration hierarchy (highest priority wins):
 from __future__ import annotations
 
 import os
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -177,9 +178,13 @@ class BaseProfile(ABC):
             return sum(vals) / len(vals)
         return 0.0
 
-    def resolve_task_timeout(self, user_prompt: str) -> float | None:
+    def resolve_task_timeout(
+        self,
+        user_prompt: str,
+        task_id: str | None = None,
+    ) -> float | None:
         """
-        Resolve the actual timeout for a task based on the user prompt.
+        Resolve the actual timeout for a task based on its identity and prompt.
 
         Override in subclasses that have task-specific timeout metadata
         (e.g. terminal profile uses TB2 task.toml data).
@@ -188,7 +193,32 @@ class BaseProfile(ABC):
         """
         return None
 
-    def resolve_time_allocation(self, user_prompt: str) -> dict:
+    def resolve_task_budget(
+        self,
+        user_prompt: str,
+        task_id: str | None = None,
+    ) -> float | None:
+        """Return the total task budget used to allocate phase budgets.
+
+        Profiles with a built-in default task budget should override this
+        method. The default keeps existing profiles unchanged and uses a
+        task-specific timeout when one is available.
+        """
+        resolver = self.resolve_task_timeout
+        parameters = inspect.signature(resolver).parameters.values()
+        supports_task_id = (
+            "task_id" in inspect.signature(resolver).parameters
+            or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters)
+        )
+        if supports_task_id:
+            return resolver(user_prompt, task_id=task_id)
+        return resolver(user_prompt)
+
+    def resolve_time_allocation(
+        self,
+        user_prompt: str,
+        task_id: str | None = None,
+    ) -> dict:
         """
         Return time allocation for the three phases as fractions of total budget.
 

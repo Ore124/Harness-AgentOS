@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import signal
 import shutil
@@ -15,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from pathlib import Path
 
 import config
@@ -35,6 +37,47 @@ except ImportError:
 
 _WORKSPACE: ContextVar[Path | None] = ContextVar("harness_workspace", default=None)
 _RUN_ID: ContextVar[str | None] = ContextVar("harness_run_id", default=None)
+
+
+@dataclass(frozen=True)
+class ToolResultOutcome:
+    """Protocol-level interpretation of a tool result.
+
+    Tool implementations continue to return plain strings for model/API
+    compatibility. This value gives tracing, metrics, and completion logic one
+    shared way to interpret the status markers embedded in those strings.
+    """
+
+    success: bool
+    failure_kind: str | None = None
+    exit_code: int | None = None
+
+
+_EXIT_CODE_MARKER = re.compile(r"(?im)^[ \t]*\[exit code:\s*(-?\d+)\][ \t]*$")
+_ERROR_MARKER = re.compile(r"(?im)^[ \t]*\[error\](?:[ \t]|$)")
+
+
+def classify_tool_result(result: object, tool_name: str | None = None) -> ToolResultOutcome:
+    """Classify a legacy tool result without requiring execution context.
+
+    ``tool_name`` is accepted so callers can keep the classifier API stable as
+    more tool-specific protocols are added. Exit-code markers are recognized
+    for all tools because persisted/legacy traces may omit the tool name.
+    """
+    del tool_name  # Reserved for future tool-specific result protocols.
+
+    if isinstance(result, BaseException):
+        return ToolResultOutcome(False, "exception")
+    if not isinstance(result, str):
+        return ToolResultOutcome(False, "invalid_result")
+
+    exit_match = _EXIT_CODE_MARKER.search(result)
+    exit_code = int(exit_match.group(1)) if exit_match else None
+    if _ERROR_MARKER.search(result):
+        return ToolResultOutcome(False, "error_marker", exit_code)
+    if exit_code is not None and exit_code != 0:
+        return ToolResultOutcome(False, "nonzero_exit", exit_code)
+    return ToolResultOutcome(True, exit_code=exit_code)
 
 
 def current_workspace() -> Path:
@@ -88,6 +131,7 @@ def resolve_for_context(ctx: RunContext, path: str) -> Path:
 _background_procs: list[subprocess.Popen] = []
 _processes_by_run: dict[str, list[subprocess.Popen]] = {}
 _dev_server_procs_by_run: dict[str, subprocess.Popen] = {}
+_windows_jobs_by_process: dict[subprocess.Popen, int] = {}
 
 def read_file(path: str) -> str:
     p = _resolve(path)
@@ -253,6 +297,7 @@ def run_bash(command: str, timeout: int = 120) -> str:
             errors="replace",
             **_process_group_kwargs(),
         )
+        _attach_windows_process_job(proc)
         _register_process(proc)
         _emit_runtime_event("managed_process_started", {"pid": proc.pid, "command": command})
         stdout, stderr = proc.communicate(timeout=timeout)
@@ -417,9 +462,11 @@ def _start_background_command(command: str) -> str:
             stderr=subprocess.DEVNULL,
             **_process_group_kwargs(),
         )
+        _attach_windows_process_job(proc)
         time.sleep(0.5)
         returncode = proc.poll()
         if returncode is not None:
+            _release_windows_process_job(proc, terminate=True)
             return f"[exit code: {returncode}]\nBackground command exited immediately."
         _register_process(proc)
         _emit_runtime_event("managed_process_started", {"pid": proc.pid, "command": command})
@@ -438,6 +485,7 @@ def stop_background_commands() -> str:
     while _background_procs:
         proc = _background_procs.pop()
         if proc.poll() is not None:
+            _release_windows_process_job(proc, terminate=True)
             continue
         _terminate_process_tree(proc)
         stopped += 1
@@ -452,6 +500,7 @@ def cleanup_run_processes(run_id: str) -> str:
     stopped = 0
     for proc in processes:
         if proc.poll() is not None:
+            _release_windows_process_job(proc, terminate=True)
             continue
         _terminate_process_tree(proc)
         stopped += 1
@@ -477,6 +526,7 @@ def _emit_runtime_event(event_type: str, payload: dict) -> None:
 
 def _unregister_process(proc: subprocess.Popen) -> None:
     """Remove a completed foreground process without touching any other process."""
+    _release_windows_process_job(proc, terminate=True)
     run_id = current_run_id()
     if run_id is None:
         return
@@ -497,10 +547,155 @@ def _process_group_kwargs() -> dict:
     return {"start_new_session": True}
 
 
-def _terminate_process_tree(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
+def _attach_windows_process_job(proc: subprocess.Popen) -> bool:
+    """Put one managed Windows process tree in its own kill-on-close Job.
+
+    Git Bash can replace or detach from the native PID returned by ``Popen``.
+    A Job follows descendants at creation time, so cleanup remains scoped to the
+    exact process tree even when the original shell PID is no longer queryable.
+    Failure is non-fatal: ``_terminate_process_tree`` retains its PID fallback.
+    """
+    if os.name != "nt" or proc in _windows_jobs_by_process:
+        return False
+
+    job_handle = _create_windows_kill_job()
+    if job_handle is None:
+        return False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        kernel32.AssignProcessToJobObject.restype = ctypes.c_int
+        process_handle = int(proc._handle)  # type: ignore[attr-defined]
+        if not kernel32.AssignProcessToJobObject(job_handle, process_handle):
+            _close_windows_handle(job_handle)
+            return False
+    except (AttributeError, OSError, TypeError, ValueError):
+        _close_windows_handle(job_handle)
+        return False
+
+    _windows_jobs_by_process[proc] = job_handle
+    return True
+
+
+def _create_windows_kill_job() -> int | None:
+    """Create a Job whose descendants are terminated when its handle closes."""
+    if os.name != "nt":
+        return None
+    job_handle: int | None = None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class _ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimitInformation),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+        kernel32.SetInformationJobObject.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = ctypes.c_int
+
+        raw_job_handle = kernel32.CreateJobObjectW(None, None)
+        if not raw_job_handle:
+            return None
+        job_handle = int(raw_job_handle)
+        limits = _ExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            job_handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+        ):
+            _close_windows_handle(job_handle)
+            return None
+        return job_handle
+    except (AttributeError, OSError, TypeError, ValueError):
+        if job_handle is not None:
+            _close_windows_handle(job_handle)
+        return None
+
+
+def _close_windows_handle(handle: int) -> None:
+    if os.name != "nt":
         return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        kernel32.CloseHandle(handle)
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+
+
+def _release_windows_process_job(proc: subprocess.Popen, *, terminate: bool) -> bool:
+    """Release ``proc``'s Job; report whether requested termination succeeded."""
+    job_handle = _windows_jobs_by_process.pop(proc, None)
+    if job_handle is None:
+        return False
+    terminated = not terminate
+    try:
+        if terminate:
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            kernel32.TerminateJobObject.restype = ctypes.c_int
+            terminated = bool(kernel32.TerminateJobObject(job_handle, 1))
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    finally:
+        _close_windows_handle(job_handle)
+    return terminated
+
+
+def _terminate_process_tree(proc: subprocess.Popen) -> None:
     if os.name == "nt":
+        used_job = _release_windows_process_job(proc, terminate=True)
+        if used_job:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return
+        if proc.poll() is not None:
+            return
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
             capture_output=True,
@@ -511,6 +706,9 @@ def _terminate_process_tree(proc: subprocess.Popen) -> None:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             pass
+        return
+
+    if proc.poll() is not None:
         return
 
     try:
@@ -634,14 +832,33 @@ def delegate_task(task: str, role: str = "assistant") -> str:
 
     result = sub.run(task)
 
-    if not result:
+    if result is None:
         return "[sub-agent returned no output]"
 
-    # Truncate to avoid blowing up the parent's context
-    if len(result) > 8000:
-        result = result[:8000] + "\n...(truncated)"
+    # Agent.run returns a structured outcome. Keep compatibility with test
+    # doubles and older Agent implementations that still return a string.
+    if isinstance(result, str):
+        text = result
+        failure_reason = None
+    else:
+        text = str(getattr(result, "text", "") or "")
+        succeeded = bool(getattr(result, "succeeded", False))
+        failure_reason = None if succeeded else str(
+            getattr(result, "failure_reason", None)
+            or getattr(result, "exit_reason", None)
+            or "unknown"
+        )
 
-    return result
+    if not text:
+        text = "[sub-agent returned no output]"
+    if failure_reason:
+        text = f"[sub-agent incomplete: {failure_reason}]\n{text}"
+
+    # Truncate to avoid blowing up the parent's context
+    if len(text) > 8000:
+        text = text[:8000] + "\n...(truncated)"
+
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -657,8 +874,15 @@ def _ensure_dev_server(start_command: str, port: int, startup_wait: int = 8) -> 
     global _dev_server_proc
     run_id = current_run_id()
     existing = _dev_server_procs_by_run.get(run_id) if run_id else _dev_server_proc
-    if existing is not None and existing.poll() is None:
-        return f"Dev server already running (pid={existing.pid})"
+    if existing is not None:
+        if existing.poll() is None:
+            return f"Dev server already running (pid={existing.pid})"
+        if run_id:
+            _unregister_process(existing)
+            _dev_server_procs_by_run.pop(run_id, None)
+        else:
+            _release_windows_process_job(existing, terminate=True)
+            _dev_server_proc = None
     proc = subprocess.Popen(
         start_command,
         shell=True,
@@ -667,6 +891,7 @@ def _ensure_dev_server(start_command: str, port: int, startup_wait: int = 8) -> 
         stderr=subprocess.PIPE,
         **_process_group_kwargs(),
     )
+    _attach_windows_process_job(proc)
     if run_id:
         _dev_server_procs_by_run[run_id] = proc
         _register_process(proc)
@@ -675,6 +900,12 @@ def _ensure_dev_server(start_command: str, port: int, startup_wait: int = 8) -> 
     time.sleep(startup_wait)
     if proc.poll() is not None:
         stderr = proc.stderr.read().decode(errors="replace")[:2000]
+        if run_id:
+            _unregister_process(proc)
+            _dev_server_procs_by_run.pop(run_id, None)
+        else:
+            _release_windows_process_job(proc, terminate=True)
+            _dev_server_proc = None
         return f"[error] Dev server exited immediately: {stderr}"
     return f"Dev server started (pid={proc.pid}, port={port})"
 

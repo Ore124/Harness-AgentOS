@@ -30,11 +30,127 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+
+_SOURCE_EXCLUDES = {
+    ".git",
+    ".idea",
+    ".pytest_cache",
+    "__pycache__",
+    "benchmark_runs",
+    "jobs",
+    "memory",
+    "venv",
+    "venv312",
+    "workspace",
+}
+
+
+def _stage_local_source(source_root: Path, destination: Path) -> None:
+    """Copy the current worktree without secrets, virtualenvs, or run output."""
+    source_root = source_root.resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+            cwd=source_root,
+            capture_output=True,
+            check=True,
+        )
+        relative_paths = [
+            Path(raw.decode("utf-8", errors="surrogateescape"))
+            for raw in completed.stdout.split(b"\0")
+            if raw
+        ]
+    except (OSError, subprocess.SubprocessError):
+        relative_paths = [
+            path.relative_to(source_root)
+            for path in source_root.rglob("*")
+            if path.is_file()
+            and not any(part in _SOURCE_EXCLUDES for part in path.relative_to(source_root).parts)
+            and path.name != ".env"
+        ]
+
+    for relative_path in relative_paths:
+        if any(part in _SOURCE_EXCLUDES for part in relative_path.parts):
+            continue
+        if relative_path.name == ".env":
+            continue
+        source = source_root / relative_path
+        if not source.is_file():
+            continue
+        target = destination / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def _extract_task_id(
+    context: AgentContext,
+    environment: BaseEnvironment | None = None,
+) -> str | None:
+    """Best-effort task identity extraction across Harbor context versions."""
+    candidates = []
+    if isinstance(context, dict):
+        candidates.append(context)
+    for method_name in ("model_dump", "dict"):
+        method = getattr(context, method_name, None)
+        if callable(method):
+            try:
+                dumped = method()
+                if isinstance(dumped, dict):
+                    candidates.append(dumped)
+            except (TypeError, ValueError):
+                pass
+    metadata = getattr(context, "metadata", None)
+    if isinstance(metadata, dict):
+        candidates.insert(0, metadata)
+
+    for field in ("task_id", "task_name", "name"):
+        value = getattr(context, field, None)
+        if value:
+            return str(value)
+        for mapping in candidates:
+            value = mapping.get(field)
+            if value:
+                return str(value)
+
+    for field in ("task", "trial"):
+        nested = getattr(context, field, None)
+        if nested is None:
+            for mapping in candidates:
+                nested = mapping.get(field)
+                if nested is not None:
+                    break
+        if nested is None:
+            continue
+        for name_field in ("id", "task_id", "name", "task_name"):
+            value = nested.get(name_field) if isinstance(nested, dict) else getattr(nested, name_field, None)
+            if value:
+                return str(value)
+
+    # Current Harbor creates an empty AgentContext for the run, while
+    # BaseEnvironment.environment_name is documented as the task short name.
+    if environment is not None:
+        for field in ("task_id", "task_name", "environment_name", "name"):
+            value = getattr(environment, field, None)
+            if value:
+                return str(value)
+    return None
 
 
 class HarnessAgent(BaseInstalledAgent):
@@ -60,8 +176,24 @@ class HarnessAgent(BaseInstalledAgent):
         3. If no python3 → download standalone python from GitHub (~30MB)
         4. Install openai from vendored wheels (fully offline)
         """
-        # Step 1: Get harness code into container
-        # Try git clone first, fall back to curl/wget tarball if no git
+        # Step 1: Upload the exact local worktree used to import this adapter.
+        # This is essential for local benchmark runs: cloning a remote default
+        # would silently test different code than the caller is reviewing.
+        source_root = Path(
+            os.environ.get(
+                "HARNESS_AGENT_SOURCE_DIR",
+                str(Path(__file__).resolve().parent.parent),
+            )
+        ).resolve()
+        if not (source_root / "harness.py").is_file():
+            raise RuntimeError(f"Invalid harness source directory: {source_root}")
+        with tempfile.TemporaryDirectory(prefix="harness-agent-source-") as tmp:
+            staged_source = Path(tmp) / "harness-agent"
+            _stage_local_source(source_root, staged_source)
+            await environment.upload_dir(staged_source, "/home/user/harness-agent")
+
+        # Ensure a download tool remains available for the standalone-Python
+        # fallback below.
         await self.exec_as_root(
             environment,
             command=(
@@ -74,25 +206,6 @@ class HarnessAgent(BaseInstalledAgent):
                 "    apt-get update -qq 2>/dev/null && "
                 "    apt-get install -y -qq curl 2>/dev/null ) "
                 ") || true"
-            ),
-        )
-
-        await self.exec_as_agent(
-            environment,
-            command=(
-                "if [ -d /home/user/harness-agent ]; then "
-                "  echo 'harness-agent already exists'; "
-                "elif command -v git >/dev/null 2>&1; then "
-                "  git clone --depth 1 "
-                "    https://github.com/lazyFrogLOL/Harness_Engineering.git "
-                "    /home/user/harness-agent; "
-                "else "
-                "  echo 'No git, downloading tarball...' && "
-                "  mkdir -p /home/user/harness-agent && "
-                "  URL='https://github.com/lazyFrogLOL/Harness_Engineering/archive/refs/heads/master.tar.gz' && "
-                "  ( curl -sL \"$URL\" 2>/dev/null || wget -qO- \"$URL\" 2>/dev/null ) "
-                "    | tar -xz --strip-components=1 -C /home/user/harness-agent; "
-                "fi"
             ),
         )
 
@@ -194,6 +307,9 @@ class HarnessAgent(BaseInstalledAgent):
 
         env_vars.append("HARNESS_WORKSPACE=/app")
         env_vars.append("HARNESS_FLAT_WORKSPACE=1")
+        task_id = _extract_task_id(context, environment)
+        if task_id:
+            env_vars.append(f"HARNESS_TASK_ID={shlex.quote(task_id)}")
         env_prefix = " ".join(env_vars)
 
         # Run harness with system python3
