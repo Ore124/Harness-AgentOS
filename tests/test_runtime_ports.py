@@ -60,6 +60,38 @@ class RuntimePortTests(unittest.TestCase):
         self.assertIn("minimal index.html skeleton under 60 lines", agent.task)
         self.assertIn("separate short tool calls", agent.task)
 
+    def test_profile_adapter_does_not_retry_exhausted_api_quota(self):
+        class QuotaAgent:
+            time_budget = None
+
+            def run(self, _task, **_kwargs):
+                return SimpleNamespace(succeeded=False, text="", exit_reason="api_quota")
+
+        agent = QuotaAgent()
+        harness = SimpleNamespace(planner=agent, builder=agent, evaluator=agent)
+        profile = SimpleNamespace(
+            format_build_task=lambda *_args: "build",
+            extract_score=lambda _text: 0,
+            pass_threshold=lambda: 7,
+        )
+        work_item = {
+            "id": "build",
+            "kind": "execute",
+            "agent_role": "executor",
+            "inputs": {"goal": "build", "profile": "app-builder"},
+        }
+        with tempfile.TemporaryDirectory() as root, patch(
+            "harness.Harness", return_value=harness
+        ), patch("profiles.get_profile", return_value=profile):
+            outcome = ProfileAgentAdapter().run(
+                work_item,
+                None,
+                RunContext("run-1", Path(root), Path(root) / "traces"),
+            )
+
+        self.assertEqual(outcome.failure_kind, "api_quota")
+        self.assertFalse(outcome.retryable)
+
     def test_profile_adapter_uses_work_item_budget_and_scopes_diagnosis(self):
         class RecordingAgent:
             def __init__(self):

@@ -398,6 +398,12 @@ class Agent:
                 err_str = str(e)
                 trace.error("api_error", err_str)
 
+                if _is_non_retryable_quota_error(err_str):
+                    log.error(f"[{self.name}] API quota or billing capacity is unavailable.")
+                    trace.finish("api_quota", iteration)
+                    exit_reason = "api_quota"
+                    break
+
                 # Rate limits get longer backoff and don't count toward abort threshold
                 if "rate_limit" in err_str.lower() or "429" in err_str:
                     import random
@@ -715,6 +721,18 @@ class Agent:
 
 def _truncate(s: str, n: int) -> str:
     return s[:n] + "..." if len(s) > n else s
+
+
+def _is_non_retryable_quota_error(error: str) -> bool:
+    normalized = error.lower()
+    return any(marker in normalized for marker in (
+        "insufficient_quota",
+        "insufficient quota",
+        "payment required",
+        "billing hard limit",
+        "余额不足",
+        "无可用资源包",
+    ))
 
 
 def _filter_tool_schemas(schemas: list[dict], allowed_names: set[str]) -> list[dict]:

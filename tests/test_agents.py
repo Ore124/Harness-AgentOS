@@ -86,6 +86,24 @@ class AgentRunResultTests(unittest.TestCase):
         self.assertEqual(result.iterations, 3)
         self.assertFalse(result.succeeded)
 
+    def test_billing_quota_error_is_not_retried_as_rate_limit(self):
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=Mock(side_effect=Exception(
+                        "Error code: 429 - 余额不足 或无可用资源包"
+                    )),
+                ),
+            ),
+        )
+
+        with patch("agents.get_client", return_value=client), patch("agents.time.sleep"):
+            result = Agent("builder", "system").run("task")
+
+        self.assertEqual(result.exit_reason, "api_quota")
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        self.assertFalse(result.succeeded)
+
     def test_evaluator_finalization_filters_expensive_tools(self):
         agent = Agent(
             "evaluator",

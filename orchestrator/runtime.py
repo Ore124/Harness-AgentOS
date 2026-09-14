@@ -158,7 +158,7 @@ class ProfileAgentAdapter:
         return AgentExecutionOutcome(
             succeeded=succeeded,
             output=output,
-            retryable=exit_reason not in {"agent_role_disabled"},
+            retryable=exit_reason not in {"agent_role_disabled", "api_quota"},
             failure_kind=None if succeeded else exit_reason,
             checkpoint={
                 "output_sha256": hashlib.sha256(
