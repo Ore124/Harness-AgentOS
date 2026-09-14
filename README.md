@@ -2,6 +2,50 @@
 
 Harness AgentOS 是一个用纯 Python 实现的多 Agent 自主执行框架。它把一个自然语言任务拆成可持续运行的工程流程：路由任务类型、规划、构建、验证、记录状态，并在必要时继续下一轮迭代。
 
+## Durable Runtime v2
+
+项目现在包含可渐进启用的 durable runtime，用于让长时任务在进程重启、执行失败和计划变化后继续推进。旧 CLI、Profile、Skill、工具 schema、Harbor 适配和 legacy Web API 默认保持不变；设置 `HARNESS_RUNTIME=durable` 后，新任务进入事件驱动内核和动态 DAG：
+
+```text
+Observe -> Plan/Replan -> Schedule -> Execute -> Verify
+                    ^                    |
+                    +-- Diagnose <- Evidence
+```
+
+durable runtime 提供版本化 `PlanDocumentV1` / `PlanPatchV1`、确定性 reducer、乐观并发事件追加、transactional outbox、capability-aware claim、60 秒租约、15 秒心跳、fencing token、checkpoint、审批、项目 RBAC、审计查询、内容寻址 artifact、Docker activity 端口和 Git worktree/串行合并端口。共享部署使用 PostgreSQL 作为唯一事实源；SQLite 仅用于本地单 worker 开发和测试。
+
+| 运行模式 | 适用方式 | 权威状态 |
+| --- | --- | --- |
+| `legacy`（默认） | 现有 CLI、Web Console、Benchmark 和恢复流程 | `harness_state.json` + 本地 SQLite 索引 |
+| `durable` | 动态 DAG、独立 worker、多进程恢复、审批和审计 | PostgreSQL；本地单 worker 可使用 SQLite |
+
+本地启动 durable 控制平面：
+
+```bash
+docker compose up --build --scale worker=2
+```
+
+或分别启动 API 与 worker（PowerShell）：
+
+```powershell
+$env:HARNESS_RUNTIME = "durable"
+$env:HARNESS_DATABASE_URL = "postgresql+psycopg://harness:password@127.0.0.1:5432/harness"
+python harness.py --ui
+python harness.py --worker --worker-id worker-01
+```
+
+需要隔离执行时，worker 使用 `HARNESS_WORKER_EXECUTOR=docker`、`HARNESS_EXECUTION_CAPABILITY=docker`，并配置受控 egress network/proxy。仓库附带的 Compose worker 默认使用 local executor，适合开发环境，不应作为不可信代码的隔离边界。
+
+数据库迁移与 legacy 导入：
+
+```bash
+alembic upgrade head
+python harness.py --migrate-state workspace/legacy-run/harness_state.json
+python harness.py --set-membership PROJECT SUBJECT owner
+```
+
+控制平面 API 位于 `/api/v1`，包括 runs、graph、断点续传 events、pause/resume/cancel、approvals、artifacts、workers、queue、audit 和 health。创建 run 必须提供 `Idempotency-Key`。
+
 项目目标不是封装某个特定 Agent SDK，而是复现并扩展长时间自主开发所需要的关键机制：Profile 分场景策略、工具调用循环、上下文压缩与重置、Skill 渐进式加载、可恢复状态文件、Web 控制台和 Terminal-Bench 风格任务适配。
 
 [English README](README_EN.md)
@@ -32,10 +76,10 @@ Harness AgentOS 关注的是 Agent 运行架构，而不是替代完整的研发
 
 | 范围 | 说明 |
 | --- | --- |
-| 做什么 | 编排 Agent 循环、Profile 策略、工具调用、状态恢复、验证反馈、记忆和策略提示 |
-| 不做什么 | 不提供生产级权限系统、租户隔离、计费系统、任务队列集群或完整 DevOps 平台 |
-| 适合场景 | 本地实验、Benchmark 适配、教学复现、受控自动化任务、Agent 架构迭代 |
-| 不适合场景 | 直接托管不可信用户任务、无沙箱执行高风险命令、替代人工审核的生产发布流程 |
+| 做什么 | 编排 Agent 循环、动态计划、工具调用、状态恢复、验证反馈、审批、审计和多 worker 调度 |
+| 不做什么 | 不包含计费、跨区域容灾、租户自助、Kubernetes/Temporal 运维体系或完整 DevOps 平台 |
+| 适合场景 | 本地实验、Benchmark 适配、受控自动化任务、团队共享运行和 Agent 架构迭代 |
+| 不适合场景 | 使用 local executor 直接运行不可信代码、无审批执行高风险外部动作、替代人工发布决策 |
 
 实际运行时，Agent 会读写文件、执行命令、启动服务并可能调用浏览器测试。建议在隔离工作区、容器或虚拟机中运行高风险任务，并为模型 API、文件系统和网络访问设置清晰边界。
 
@@ -43,10 +87,10 @@ Harness AgentOS 关注的是 Agent 运行架构，而不是替代完整的研发
 
 - 语言：Python 3.10+
 - LLM 接口：OpenAI-compatible Chat Completions API
-- 依赖：`openai`、`tiktoken`、`playwright`、`fastapi`、`uvicorn`
+- 依赖：`openai`、`tiktoken`、`playwright`、`fastapi`、`uvicorn`、`sqlalchemy`、`psycopg`、`alembic`
 - Web 控制台：FastAPI + 静态 HTML/CSS/JS
 - 浏览器验证：Playwright Chromium
-- 状态持久化：JSON state file + 本地 SQLite orchestrator store
+- 状态持久化：legacy 使用 JSON + 本地 SQLite；durable 使用事件、快照和 transactional outbox，PostgreSQL 支持多 worker
 - 记忆系统：JSON-backed routing memory + failure-pattern strategy hints
 - 失败恢复：Evidence-Guided Recovery，用结构化失败证据指导下一轮 targeted repair
 - Benchmark 适配：Harbor / Terminal-Bench 2.0 风格任务
@@ -157,9 +201,9 @@ http://127.0.0.1:8765
 
 Web Console 支持创建任务、自动路由 Profile、暂停/恢复运行、批准需要人工确认的步骤、查看 trace 和工作区产物。
 
-### 5. 恢复中断的任务
+### 5. 恢复中断的 legacy 任务
 
-每次状态驱动运行都会在工作区写入 `harness_state.json`。可以用 run id、state 文件路径或工作区路径恢复：
+legacy 状态驱动运行会在工作区写入 `harness_state.json`。可以用 run id、state 文件路径或工作区路径恢复：
 
 ```bash
 python harness.py --resume 20260710-153000
@@ -195,24 +239,14 @@ python harness.py --ui --port 8765
 Router / Profile 选择
   |
   v
-Planner -> spec.md
+  +-- legacy: Planner -> Builder -> Evaluator -> Analyze -> 下一轮
   |
-  v
-Contract negotiation -> contract.md  (app-builder 启用)
-  |
-  v
-Builder -> 代码、脚本、产物
-  |
-  v
-Evaluator -> feedback.md、score
-  |
-  v
-Analyze -> analysis.json、memory update
-  |
-  +-- 分数未达标时进入下一轮 Build/Evaluate
+  +-- durable: Observe -> Plan/Replan -> Schedule -> Execute -> Verify
+                                  ^                         |
+                                  +-- Diagnose <- Evidence-+
 ```
 
-CLI 的传统路径由 `harness.py` 直接编排。Web Console 和 `--resume` 使用 `orchestrator.scheduler.Scheduler`，以 `harness_state.json` 为唯一事实来源逐步推进任务。
+CLI 的传统路径由 `harness.py` 直接编排。legacy Web Console 和 `--resume` 使用 `orchestrator.scheduler.Scheduler`，以 `harness_state.json` 为权威状态逐步推进任务。durable 路径由 Controller、事件 reducer 和独立 worker 协作推进；数据库中的事件与快照是权威状态，JSON state 和 canonical trace 仅作为兼容导出或导入来源。
 
 ### 核心模块
 
@@ -225,8 +259,8 @@ CLI 的传统路径由 `harness.py` 直接编排。Web Console 和 `--resume` �
 | `profiles/` | 不同任务场景的 Agent prompt、工具集合、评分阈值、时间预算 |
 | `middlewares.py` | 循环检测、退出前验证、时间预算、骨架代码检测、错误指导 |
 | `skills.py` / `skills/` | Skill 注册和任务领域知识目录 |
-| `orchestrator/` | 状态机、路由、记忆、策略提示、失败证据提取、分析、hook、路径安全和可恢复运行 |
-| `web/` | FastAPI 控制台和浏览器端 UI |
+| `orchestrator/` | legacy scheduler，以及 durable 领域模型、事件 reducer、DAG Controller、Repository、Worker、Artifact、沙箱与 Git workspace 端口 |
+| `web/` | FastAPI 控制台、legacy API 和版本化 `/api/v1` 控制平面 |
 | `benchmarks/` | Harbor / Terminal-Bench 适配 |
 | `tests/` | Profile、Scheduler、Router、Web Server、Memory 等单元测试 |
 
@@ -377,7 +411,30 @@ HARNESS_EVIDENCE_GUIDED_RECOVERY=0
 python harness.py --ui --port 8765
 ```
 
-主要 API：
+durable API：
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/v1/runs \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: demo-run-001" \
+  -d '{"project_id":"default","goal":"Fix the failing tests","profile":"swe-bench"}'
+```
+
+| API | 用途 |
+| --- | --- |
+| `POST /api/v1/runs` | 幂等创建运行，返回 `202` |
+| `GET /api/v1/runs/{run_id}` | 查看运行快照 |
+| `GET /api/v1/runs/{run_id}/graph` | 查看当前计划 DAG |
+| `GET /api/v1/runs/{run_id}/events?after=<cursor>` | 断点续传事件流 |
+| `POST /api/v1/runs/{run_id}/pause`、`/resume`、`/cancel` | 控制运行 |
+| `GET /api/v1/runs/{run_id}/approvals` | 查看待审批动作 |
+| `POST /api/v1/runs/{run_id}/approvals/{approval_id}/decision` | 提交审批决定 |
+| `GET /api/v1/artifacts/{artifact_id}` | 获取授权后的 artifact |
+| `GET /api/v1/workers`、`/projects/{project_id}/queue`、`/projects/{project_id}/audit`、`/health` | 运行与诊断信息 |
+
+`HARNESS_AUTH_MODE=disabled` 适合本地使用；启用 OIDC 后，请求需要 Bearer token，授权范围按 project 和 `owner | operator | approver | viewer` 角色计算。完整配置项见 [.env.template](.env.template)。
+
+legacy 兼容 API：
 
 | API | 用途 |
 | --- | --- |
@@ -392,7 +449,7 @@ python harness.py --ui --port 8765
 
 ## 工作区产物
 
-默认输出目录是 `workspace/`。每次普通 CLI 运行会创建一个带时间戳的子目录；状态驱动运行以 `run_id` 为目录名。
+默认输出目录是 `workspace/`。每次普通 CLI 运行会创建一个带时间戳的子目录；状态驱动运行以 `run_id` 为目录名。下列文件是 legacy 状态或兼容导出物；durable 模式的权威状态保存在数据库中，大型产物通过本地或 S3-compatible ArtifactStore 保存。
 
 常见产物：
 
@@ -402,9 +459,9 @@ contract.md             本轮验收合同，app-builder 使用
 feedback.md             evaluator 输出
 progress.md             运行进度记录
 analysis.json           trace 和产物分析
-harness_state.json      状态驱动运行的状态文件
+harness_state.json      legacy 状态文件或 durable 兼容导出物
 _trace_<agent>.jsonl    每个 Agent 的结构化事件 trace
-.harness/orchestrator.db 当前 workspace 的状态快照和事件索引
+.harness/orchestrator.db legacy 本地状态索引
 .harness/metrics.json   token、round、recovery 和 benchmark 汇总指标
 .harness/canonical_trace.jsonl 版本化的运行生命周期、LLM、工具和进程事件
 ```

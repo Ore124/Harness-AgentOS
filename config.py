@@ -82,3 +82,70 @@ SPEC_FILE = "spec.md"
 FEEDBACK_FILE = "feedback.md"
 CONTRACT_FILE = "contract.md"
 PROGRESS_FILE = "progress.md"
+
+# --- Durable runtime ---
+HARNESS_RUNTIME = os.environ.get("HARNESS_RUNTIME", "legacy").strip().lower()
+DURABLE_PROJECTS = tuple(
+    value.strip()
+    for value in os.environ.get("HARNESS_DURABLE_PROJECTS", "").split(",")
+    if value.strip()
+)
+DURABLE_ROLLOUT_PERCENT = int(
+    os.environ.get("HARNESS_DURABLE_ROLLOUT_PERCENT", "0")
+)
+DATABASE_URL = os.environ.get(
+    "HARNESS_DATABASE_URL",
+    f"sqlite:///{Path(WORKSPACE).resolve() / '.harness' / 'durable.db'}",
+)
+DURABLE_EXECUTION_CAPABILITY = os.environ.get(
+    "HARNESS_EXECUTION_CAPABILITY", "local"
+)
+WORKER_EXECUTOR = os.environ.get("HARNESS_WORKER_EXECUTOR", "local").strip().lower()
+AGENT_SANDBOX_IMAGE = os.environ.get(
+    "HARNESS_AGENT_SANDBOX_IMAGE", "harness-agentos:latest"
+)
+AGENT_EGRESS_NETWORK = os.environ.get("HARNESS_AGENT_EGRESS_NETWORK", "") or None
+AGENT_EGRESS_PROXY = os.environ.get("HARNESS_AGENT_EGRESS_PROXY", "") or None
+AGENT_NETWORK_HOSTS = tuple(
+    value.strip()
+    for value in os.environ.get("HARNESS_AGENT_NETWORK_HOSTS", "api.openai.com").split(",")
+    if value.strip()
+)
+WORKER_CAPABILITIES = tuple(
+    value.strip()
+    for value in os.environ.get("HARNESS_WORKER_CAPABILITIES", "local").split(",")
+    if value.strip()
+)
+WORKER_HEARTBEAT_SECONDS = float(
+    os.environ.get("HARNESS_WORKER_HEARTBEAT_SECONDS", "15")
+)
+WORKER_POLL_SECONDS = float(os.environ.get("HARNESS_WORKER_POLL_SECONDS", "1"))
+RETRY_BACKOFF_SECONDS = float(os.environ.get("HARNESS_RETRY_BACKOFF_SECONDS", "5"))
+GIT_REPOSITORY = os.environ.get("HARNESS_GIT_REPOSITORY", "").strip()
+GIT_BASE_REVISION = os.environ.get("HARNESS_GIT_BASE_REVISION", "HEAD").strip()
+GIT_TARGET_BRANCH = os.environ.get("HARNESS_GIT_TARGET_BRANCH", "main").strip()
+GIT_WORKTREE_ROOT = os.environ.get(
+    "HARNESS_GIT_WORKTREE_ROOT",
+    str(Path(WORKSPACE).resolve() / ".harness" / "worktrees"),
+)
+
+# --- Team security ---
+AUTH_MODE = os.environ.get("HARNESS_AUTH_MODE", "disabled").strip().lower()
+OIDC_ISSUER = os.environ.get("HARNESS_OIDC_ISSUER", "")
+OIDC_AUDIENCE = os.environ.get("HARNESS_OIDC_AUDIENCE", "")
+OIDC_JWKS_URL = os.environ.get("HARNESS_OIDC_JWKS_URL", "")
+
+# --- Artifact storage ---
+ARTIFACT_STORE = os.environ.get("HARNESS_ARTIFACT_STORE", "local").strip().lower()
+ARTIFACT_ROOT = os.environ.get(
+    "HARNESS_ARTIFACT_ROOT",
+    str(Path(WORKSPACE).resolve() / ".harness" / "artifacts"),
+)
+S3_BUCKET = os.environ.get("HARNESS_S3_BUCKET", "")
+S3_PREFIX = os.environ.get("HARNESS_S3_PREFIX", "harness-artifacts")
+S3_ENDPOINT_URL = os.environ.get("HARNESS_S3_ENDPOINT_URL", "") or None
+S3_PUBLIC_ENDPOINT_URL = os.environ.get("HARNESS_S3_PUBLIC_ENDPOINT_URL", "") or None
+
+# --- Observability ---
+OTEL_SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "harness-agentos")
+OTEL_EXPORTER_OTLP_ENDPOINT = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")

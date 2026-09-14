@@ -137,9 +137,33 @@ class HarnessFormatter(logging.Formatter):
         return f"{C.DIM}{ts}{C.RESET} {msg}"
 
 
+class EncodingSafeStreamHandler(logging.StreamHandler):
+    """Write logs without letting a legacy console codepage break a run.
+
+    Windows terminals may still expose a GBK stream even when the process is
+    otherwise Unicode-aware.  Logging's default handler reports an internal
+    error for emoji-heavy messages in that situation.  Preserve the normal
+    output when possible and replace only characters unsupported by the
+    destination stream as a final fallback.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            rendered = self.format(record) + self.terminator
+            try:
+                self.stream.write(rendered)
+            except UnicodeEncodeError:
+                encoding = getattr(self.stream, "encoding", None) or "ascii"
+                safe = rendered.encode(encoding, errors="replace").decode(encoding)
+                self.stream.write(safe)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
 def setup_logging(verbose: bool = False):
     """Configure logging with the rich formatter."""
-    handler = logging.StreamHandler(sys.stdout)
+    handler = EncodingSafeStreamHandler(sys.stdout)
     handler.setFormatter(HarnessFormatter())
 
     logger = logging.getLogger("harness")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 
 @dataclass(frozen=True)
@@ -13,6 +13,9 @@ class RunContext:
     trace_dir: Path
     allow_terminal: bool = False
     task_id: str | None = None
+    attempt_id: str | None = None
+    cancel_check: Callable[[], bool] | None = None
+    checkpoint_callback: Callable[[Mapping[str, Any]], None] | None = None
 
     @classmethod
     def from_state(cls, state: dict, *, allow_terminal: bool = False) -> "RunContext":

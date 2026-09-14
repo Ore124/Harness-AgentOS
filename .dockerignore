@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.db
+*.log
+workspace
+benchmark_runs
+jobs
+vendor_wheels

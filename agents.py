@@ -5,6 +5,7 @@ Uses OpenAI-compatible chat completions API with function calling.
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 import time
 import logging
@@ -226,9 +227,21 @@ class Agent:
         if run_context is None:
             return self._run(task, run_id=run_id, phase=phase)
         with run_context.activate():
-            return self._run(task, run_id=run_id, phase=phase)
+            return self._run(
+                task,
+                run_id=run_id,
+                phase=phase,
+                run_context=run_context,
+            )
 
-    def _run(self, task: str, *, run_id: str | None = None, phase: str | None = None) -> AgentRunResult:
+    def _run(
+        self,
+        task: str,
+        *,
+        run_id: str | None = None,
+        phase: str | None = None,
+        run_context=None,
+    ) -> AgentRunResult:
         """
         Execute the agent loop until the model stops calling tools
         or we hit the iteration limit.
@@ -251,6 +264,7 @@ class Agent:
         agent_started = time.time()
         exit_reason = "max_iterations"
         iterations = 0
+        consecutive_unparsed_lengths = 0
 
         for iteration in range(1, config.MAX_AGENT_ITERATIONS + 1):
             iterations = iteration
@@ -304,6 +318,15 @@ class Agent:
                 compression_started = time.perf_counter()
                 checkpoint = context.create_checkpoint(messages, llm_call_simple)
                 messages = context.restore_from_checkpoint(checkpoint, self.system_prompt)
+                _durable_checkpoint(
+                    run_context,
+                    {
+                        "kind": "context_reset",
+                        "agent": self.name,
+                        "iteration": iteration,
+                        "checkpoint_sha256": _digest_text(str(checkpoint)),
+                    },
+                )
                 _mark_unattributed_messages(messages, "compression_reset")
                 metrics.RECORDER.add_latency("compression_reset_ms", int((time.perf_counter() - compression_started) * 1000))
             elif token_count > config.COMPRESS_THRESHOLD:
@@ -312,6 +335,15 @@ class Agent:
                 metrics.RECORDER.record_context_event("compact")
                 compression_started = time.perf_counter()
                 messages = context.compact_messages(messages, llm_call_simple, role=self.name)
+                _durable_checkpoint(
+                    run_context,
+                    {
+                        "kind": "context_compaction",
+                        "agent": self.name,
+                        "iteration": iteration,
+                        "message_count": len(messages),
+                    },
+                )
                 _mark_unattributed_messages(messages, "compression_reset")
                 metrics.RECORDER.add_latency("compression_reset_ms", int((time.perf_counter() - compression_started) * 1000))
 
@@ -466,6 +498,33 @@ class Agent:
                 last_text = msg.content
                 log.info(f"[{self.name}] assistant: {msg.content[:200]}...")
 
+            # A length-limited response without parsed tool calls is incomplete,
+            # not a successful text-only completion. Retry with an explicit size
+            # constraint before running the normal no-tool exit middleware.
+            if choice.finish_reason == "length" and not msg.tool_calls:
+                consecutive_unparsed_lengths += 1
+                log.warning(f"[{self.name}] Output truncated before any tool call was parsed.")
+                trace.error("length_truncated", "max_tokens hit before tool call")
+                if consecutive_unparsed_lengths >= 3:
+                    log.error(f"[{self.name}] Repeated truncation without executable output.")
+                    trace.finish("length_truncated", iteration)
+                    exit_reason = "length_truncated"
+                    break
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM] Your last response exceeded the token limit and NO tool call was "
+                        "executed. In your NEXT response, make exactly one write_file call that creates "
+                        "a minimal index.html skeleton under 60 lines. Do not include CSS, JavaScript, "
+                        "or the element dataset yet. After that tool result, add the remaining files in "
+                        "separate short tool calls. Do not attempt the complete application now."
+                    ),
+                    "_metrics_category": "other",
+                })
+                continue
+            if msg.tool_calls:
+                consecutive_unparsed_lengths = 0
+
             # --- If no tool calls, check pre-exit middlewares ---
             if not msg.tool_calls:
                 # Detect "text-only" responses where model describes actions
@@ -525,6 +584,18 @@ class Agent:
                         "content": f"[error] Invalid JSON arguments: {tc.function.arguments[:200]}",
                         "_metrics_category": "tool_results",
                     })
+                    _durable_checkpoint(
+                        run_context,
+                        {
+                            "kind": "tool_result",
+                            "agent": self.name,
+                            "iteration": iteration,
+                            "tool_call_id": str(tc.id),
+                            "tool": fn_name,
+                            "success": False,
+                            "failure_kind": "invalid_arguments",
+                        },
+                    )
                     continue
 
                 log.info(f"[{self.name}] tool: {fn_name}({_truncate(str(fn_args), 120)})")
@@ -562,6 +633,21 @@ class Agent:
                     "content": result,
                     "_metrics_category": "tool_results",
                 })
+                _durable_checkpoint(
+                    run_context,
+                    {
+                        "kind": "tool_result",
+                        "agent": self.name,
+                        "iteration": iteration,
+                        "tool_call_id": tool_call_id,
+                        "tool": fn_name,
+                        "success": outcome.success,
+                        "failure_kind": outcome.failure_kind,
+                        "exit_code": outcome.exit_code,
+                        "result_sha256": _digest_text(str(result)),
+                        "result_size": len(str(result)),
+                    },
+                )
 
                 # --- Middleware: post-tool hooks ---
                 middleware_started = time.perf_counter()
@@ -676,6 +762,16 @@ def _messages_for_api(messages: list[dict]) -> list[dict]:
         {key: value for key, value in msg.items() if not key.startswith("_metrics_")}
         for msg in messages
     ]
+
+
+def _durable_checkpoint(run_context, payload: dict) -> None:
+    callback = getattr(run_context, "checkpoint_callback", None)
+    if callback is not None:
+        callback(payload)
+
+
+def _digest_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _categorize_messages_for_metrics(messages: list[dict]) -> dict[str, int]:

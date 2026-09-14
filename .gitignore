@@ -11,3 +11,7 @@ jobs/
 venv/
 package-lock.json
 benchmark_runs/
+docs/
+*.log
+/resume_failed_benchmark.ps1
+/个人用.md

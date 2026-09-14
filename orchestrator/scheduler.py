@@ -297,115 +297,95 @@ class Scheduler:
         self.hooks = hooks or HookManager(self.state_path)
 
     def step_once(self) -> dict[str, Any]:
+        """Advance one durable step through the reducer/effect executor."""
+        from orchestrator.scheduler_executor import SchedulerStepExecutor
+
         state = load_state(self.state_path)
-        if not state.get("canonical_trace_started"):
-            self._trace(state, "run_started", {"task_id": state.get("task_id") or state.get("prompt"), "model": config.MODEL, "initial_workspace": state.get("workspace"), "feature_flags": _trace_flags()})
-            state["canonical_trace_started"] = True
-            save_state(self.state_path, state)
+        return SchedulerStepExecutor(self).execute(state)
 
+    def _execute_step_action(self, state: dict[str, Any], action: str) -> dict[str, Any]:
+        """Execute one existing action; state selection lives in the reducer."""
+        if action == "route":
+            return self._route(state)
+        if action == "plan":
+            state = self._run_phase(state, "plan", self.phase_runner.plan, "planner")
+            return self._set_next_after_plan(state)
+        if action == "contract":
+            state = self._run_phase(state, "contract", self.phase_runner.contract, "contract")
+            state["phase"] = "build"
+            state["next_action"] = "build"
+            return state
+        if action == "build":
+            state = self._run_phase(state, "build", self.phase_runner.build, "builder")
+            return self._set_next_after_build(state)
+        if action == "evaluate":
+            state = self._run_phase(state, "evaluate", self.phase_runner.evaluate, "evaluator")
+            return self._set_next_after_evaluate(state)
+        if action == "analyze":
+            return self._analyze(state)
+        raise ValueError(f"Unknown scheduler action: {action}")
+
+    def _handle_step_failure(
+        self,
+        state: dict[str, Any],
+        action: str,
+        exc: BaseException,
+    ) -> dict[str, Any]:
+        """Execute the existing recovery path for a failed scheduler action."""
+        self._cleanup_run_processes(state)
         if config.HARNESS_ACCEPTANCE_PROGRESS_CONTROLLER:
-            state = self._sync_acceptance_baseline(state)
-            state = self._reconcile_durable_acceptance_transition(state)
-
-        if state.get("requires_human_approval") and not state.get("human_approval", {}).get("approved"):
-            state = self._apply_hook_result(state, self.hooks.on_human_approval_required(state))
-            save_state(self.state_path, state)
-            return load_state(self.state_path)
-
-        if not state.get("active"):
-            self.hooks.on_stall(state, "active flag is false")
-            return state
-        if state.get("requires_confirmation"):
-            self.hooks.on_stall(state, "profile confirmation required")
-            return state
-        if not state.get("next_action"):
-            self.hooks.on_stall(state, "no next action")
-            return state
-
-        state = self._apply_hook_result(state, self.hooks.before_step(state))
-        if state.get("status") in {"paused", "error", "waiting_confirmation", "waiting_approval"}:
-            save_state(self.state_path, state)
-            return load_state(self.state_path)
-
-        action = state["next_action"]
-        try:
-            if action == "route":
-                state = self._route(state)
-            elif action == "plan":
-                state = self._run_phase(state, "plan", self.phase_runner.plan, "planner")
-                state = self._set_next_after_plan(state)
-            elif action == "contract":
-                state = self._run_phase(state, "contract", self.phase_runner.contract, "contract")
-                state["phase"] = "build"
-                state["next_action"] = "build"
-            elif action == "build":
-                state = self._run_phase(state, "build", self.phase_runner.build, "builder")
-                state = self._set_next_after_build(state)
-            elif action == "evaluate":
-                state = self._run_phase(state, "evaluate", self.phase_runner.evaluate, "evaluator")
-                state = self._set_next_after_evaluate(state)
-            elif action == "analyze":
-                state = self._analyze(state)
-            else:
-                raise ValueError(f"Unknown scheduler action: {action}")
-
-            save_state(self.state_path, state)
-            return load_state(self.state_path)
-        except Exception as exc:
-            self._cleanup_run_processes(state)
-            if config.HARNESS_ACCEPTANCE_PROGRESS_CONTROLLER:
-                try:
-                    state = self._refresh_acceptance(
-                        state,
-                        context=f"{action}_error",
-                        recent_failure=f"{type(exc).__name__}: {exc}",
-                    )
-                    if (state.get("acceptance_decision") or {}).get("action") == "complete":
-                        state["phase"] = "analyze"
-                        state["next_action"] = "analyze"
-                        state["status"] = "running"
-                        state["active"] = True
-                        append_event(state, "acceptance_salvaged", {
-                            "failed_action": action,
-                            "error_type": type(exc).__name__,
-                            "verification_token": _latest_verification_token(state.get("analysis") or {}),
-                        })
-                        save_state(self.state_path, state)
-                        return load_state(self.state_path)
-                except Exception as acceptance_error:
-                    append_event(state, "acceptance_refresh_failed", {
-                        "failed_action": action,
-                        "message": str(acceptance_error),
-                    })
-            if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
-                evidence = build_failure_evidence(
+            try:
+                state = self._refresh_acceptance(
                     state,
-                    phase=action,
-                    error=exc,
-                    retry_goal=f"Recover from {action} failure and continue the original task.",
+                    context=f"{action}_error",
+                    recent_failure=f"{type(exc).__name__}: {exc}",
                 )
-                state = append_failure_evidence(state, evidence)
-                metrics.RECORDER.record_failure_evidence(evidence, recovery_attempt_planned=False)
-            result = self.hooks.on_error(state, exc)
-            state = self._apply_hook_result(state, result, failed_action=action)
-            if (
-                config.HARNESS_ACCEPTANCE_PROGRESS_CONTROLLER
-                and result.action == "retry"
-                and (state.get("acceptance_decision") or {}).get("action") == "repair"
-            ):
-                state = self._record_acceptance_repair_round(state)
-            if result.action == "retry" and config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
-                state = mark_recovery_attempt(state)
-                metrics.RECORDER.record_recovery_attempt()
-            if result.action == "continue":
-                state["status"] = "error"
-                state["active"] = False
-                state["last_error"] = {"type": type(exc).__name__, "message": str(exc)}
-            if state.get("status") == "error":
-                self._trace(state, "run_failed", {"status": "error", "task_success": False, "error": str(exc)})
-            append_event(state, "scheduler_error", state["last_error"] or {"message": str(exc)})
-            save_state(self.state_path, state)
-            return load_state(self.state_path)
+                if (state.get("acceptance_decision") or {}).get("action") == "complete":
+                    state["phase"] = "analyze"
+                    state["next_action"] = "analyze"
+                    state["status"] = "running"
+                    state["active"] = True
+                    append_event(state, "acceptance_salvaged", {
+                        "failed_action": action,
+                        "error_type": type(exc).__name__,
+                        "verification_token": _latest_verification_token(state.get("analysis") or {}),
+                    })
+                    save_state(self.state_path, state)
+                    return load_state(self.state_path)
+            except Exception as acceptance_error:
+                append_event(state, "acceptance_refresh_failed", {
+                    "failed_action": action,
+                    "message": str(acceptance_error),
+                })
+        if config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
+            evidence = build_failure_evidence(
+                state,
+                phase=action,
+                error=exc,
+                retry_goal=f"Recover from {action} failure and continue the original task.",
+            )
+            state = append_failure_evidence(state, evidence)
+            metrics.RECORDER.record_failure_evidence(evidence, recovery_attempt_planned=False)
+        result = self.hooks.on_error(state, exc)
+        state = self._apply_hook_result(state, result, failed_action=action)
+        if (
+            config.HARNESS_ACCEPTANCE_PROGRESS_CONTROLLER
+            and result.action == "retry"
+            and (state.get("acceptance_decision") or {}).get("action") == "repair"
+        ):
+            state = self._record_acceptance_repair_round(state)
+        if result.action == "retry" and config.HARNESS_EVIDENCE_GUIDED_RECOVERY:
+            state = mark_recovery_attempt(state)
+            metrics.RECORDER.record_recovery_attempt()
+        if result.action == "continue":
+            state["status"] = "error"
+            state["active"] = False
+            state["last_error"] = {"type": type(exc).__name__, "message": str(exc)}
+        if state.get("status") == "error":
+            self._trace(state, "run_failed", {"status": "error", "task_success": False, "error": str(exc)})
+        append_event(state, "scheduler_error", state["last_error"] or {"message": str(exc)})
+        save_state(self.state_path, state)
+        return load_state(self.state_path)
 
     def run_until_idle(self, poll_interval: float = 0.2, max_steps: int | None = None) -> dict[str, Any]:
         steps = 0

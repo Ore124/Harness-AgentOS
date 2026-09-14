@@ -1,10 +1,53 @@
-# Harness — Multi-Agent Architecture for Long-Running Autonomous Development
+# Harness AgentOS — Recoverable Multi-Agent Harness for Long-Running Tasks
 
 English | [中文](README.md)
 
 > An educational reproduction of Anthropic's [Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps).
 >
 > Pure Python + OpenAI-compatible API. No proprietary Agent SDK. Works with any model provider.
+
+## Durable Runtime v2
+
+Harness AgentOS includes an opt-in durable runtime for work that must survive process restarts, execution failures, and plan changes. Existing CLI commands, Profiles, Skills, tool schemas, Harbor integration, and legacy Web APIs remain available. Set `HARNESS_RUNTIME=durable` to route new runs through the event-driven DAG runtime:
+
+```text
+Observe -> Plan/Replan -> Schedule -> Execute -> Verify
+                    ^                    |
+                    +-- Diagnose <- Evidence
+```
+
+The durable path adds immutable plan revisions and patches, deterministic reducers, optimistic event appends, a transactional outbox, capability-aware work claiming, leases and fencing tokens, checkpoints, approvals, project-scoped RBAC, audit events, artifact references, Docker execution, and Git worktree integration. Shared deployments use PostgreSQL as the source of truth; SQLite is limited to local single-worker development and tests.
+
+| Runtime | Intended use | Authoritative state |
+|---------|--------------|---------------------|
+| `legacy` (default) | Existing CLI, Web Console, benchmarks, and resume flow | `harness_state.json` plus a local SQLite index |
+| `durable` | Dynamic DAGs, independent workers, multi-process recovery, approvals, and audit | PostgreSQL; SQLite is supported for a local single worker |
+
+Start a local API and worker stack:
+
+```bash
+docker compose up --build --scale worker=2
+```
+
+Or run the processes separately in PowerShell:
+
+```powershell
+$env:HARNESS_RUNTIME = "durable"
+$env:HARNESS_DATABASE_URL = "postgresql+psycopg://harness:password@127.0.0.1:5432/harness"
+python harness.py --ui
+python harness.py --worker --worker-id worker-01
+```
+
+The included Compose workers use the local executor for development. For isolated execution, select the Docker executor and configure its network policy. Apply schema migrations with `alembic upgrade head`; legacy state can be imported with `python harness.py --migrate-state <harness_state.json>`.
+
+The versioned control API is under `/api/v1`. Creating a run requires an `Idempotency-Key` header:
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/v1/runs \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: demo-run-001" \
+  -d '{"project_id":"default","goal":"Fix the failing tests","profile":"swe-bench"}'
+```
 
 ## 🏆 Terminal-Bench 2.0 Leaderboard Results
 
@@ -30,7 +73,7 @@ cobol-modernization, code-from-image, constraints-scheduling, configure-git-webs
 
 ## What Is This
 
-An educational project that reproduces every architectural concept from the Anthropic article in runnable code. Think of it as "executable annotations" for the article — every design decision maps to a concrete implementation.
+The project started as an executable exploration of the Anthropic article and now supports two runtime paths: the original Plan → Build → Evaluate loop and the recoverable, event-driven DAG runtime described above.
 
 Give it a one-sentence prompt, and it autonomously: plans the product → negotiates acceptance criteria → writes code → browser-tests it → scores it → iterates on feedback. Zero human intervention.
 
@@ -97,9 +140,9 @@ harbor run -d "terminal-bench@2.0" \
 
 This is the core value of the project. The table below maps each architectural concept from the article to its exact code location.
 
-### 1. Three-Agent Architecture
+### 1. Legacy Three-Agent Architecture
 
-The article describes a Planner → Builder → Evaluator system.
+The original runtime follows a Planner → Builder → Evaluator system. Durable runs wrap the same Profile-driven agent capabilities behind Planner, Executor, Verifier, Diagnostician, and Integrator work items.
 
 | Concept | Article Description | Code Location |
 |---------|-------------------|---------------|
@@ -263,7 +306,7 @@ Defined in `prompts.py` EVALUATOR_SYSTEM.
 ## Project Structure
 
 ```
-├── harness.py              # Entry point + outer orchestration loop (Plan → Contract → Build → Evaluate)
+├── harness.py              # CLI entry point for legacy, durable API, worker, and migration commands
 ├── agents.py               # Core agent while loop (llm.call → tool → context check)
 ├── context.py              # Context lifecycle (compaction / anxiety detection / reset / checkpoint)
 ├── tools.py                # Tool implementations + OpenAI function schemas
@@ -276,6 +319,12 @@ Defined in `prompts.py` EVALUATOR_SYSTEM.
 ├── logger.py               # Rich logging (color-coded agents + emoji markers + phase banners)
 ├── skills.py               # Skill registry (progressive disclosure Level 1)
 ├── config.py               # Configuration (auto-loads .env)
+├── durable_activity.py     # Container activity entry point
+├── durable_cli.py          # Durable worker and migration commands
+├── migrations/             # Alembic database migrations
+├── orchestrator/           # Legacy scheduler + durable domain, reducer, controller, repository,
+│                             worker runtime, outbox, artifacts, sandbox, and Git workspace ports
+├── web/api_v1.py           # Versioned durable control API
 │
 ├── profiles/               # Task scenario profile system
 │   ├── base.py             #   Abstract base: BaseProfile + AgentConfig + ProfileConfig
@@ -334,7 +383,16 @@ COMPRESS_THRESHOLD=50000       # token count to trigger compaction
 RESET_THRESHOLD=100000         # token count to trigger full reset
 MAX_AGENT_ITERATIONS=500       # max tool calls per agent (actual limit via TimeBudgetMiddleware)
 ENABLE_PARALLEL_TOOL_CALLS=0   # parallel tool calls (enable only for Claude/GPT-4o)
+
+# Durable runtime (optional; legacy remains the default)
+HARNESS_RUNTIME=durable
+HARNESS_DATABASE_URL=postgresql+psycopg://harness:harness@127.0.0.1:5432/harness
+HARNESS_EXECUTION_CAPABILITY=local
+HARNESS_WORKER_CAPABILITIES=local
+HARNESS_WORKER_EXECUTOR=local
 ```
+
+Use `HARNESS_DURABLE_PROJECTS` and `HARNESS_DURABLE_ROLLOUT_PERCENT` for gradual routing. OIDC, S3-compatible artifact storage, Docker execution, Git worktrees, and OpenTelemetry are configured through the variables documented in [.env.template](.env.template).
 
 ### Profile-Level Configuration
 
@@ -388,9 +446,11 @@ python harness.py --profile swe-bench "Fix the TypeError in parse_config()"
 python harness.py --profile reasoning "What is the escape velocity of Mars?"
 ```
 
-## Not Yet Implemented
+## Current Boundaries
 
-The following concepts are described in the article but intentionally left unimplemented. Reasons and implementation sketches are provided as exercise directions for learners.
+The repository includes the durable workflow building blocks while intentionally leaving out billing, cross-region disaster recovery, tenant self-service, and Kubernetes or Temporal operations. The local executor is trusted-mode only; use the Docker executor and an explicit network policy for untrusted code. High-risk external actions should remain approval-gated.
+
+The following article-specific tuning ideas remain open:
 
 ### 1. Evaluator Few-Shot Calibration
 
@@ -415,43 +475,7 @@ use of negative space, accent color derived from content context.
 """
 ```
 
-### 2. Per-Round Token Cost Tracking
-
-Article: Detailed per-agent duration + cost tables (Planner 4.7min/$0.46, Build 2hr/$71.08).
-
-Why not implemented: Different providers (OpenAI, OpenRouter, Ollama) have different billing and usage field formats.
-
-Implementation sketch:
-```python
-# In agents.py Agent.run(), accumulate usage after each API call
-response = client.chat.completions.create(**kwargs)
-if response.usage:
-    self.total_prompt_tokens += response.usage.prompt_tokens
-    self.total_completion_tokens += response.usage.completion_tokens
-
-cost = (prompt_tokens * input_price + completion_tokens * output_price) / 1_000_000
-log.info(f"Build round {round_num}: {duration:.0f}s, ${cost:.2f}")
-```
-
-### 3. Git Rollback Protection
-
-Article: Builder uses git for version control, enabling rollback on evaluation failure or PIVOT.
-
-Why not implemented: Builder already uses git commit, but the Harness doesn't leverage it for automatic rollback. Nice-to-have, not core.
-
-Implementation sketch:
-```python
-# In harness.py, tag before/after each build
-os.system(f"cd {config.WORKSPACE} && git tag round-{round_num}-start")
-self.builder.run(build_task)
-os.system(f"cd {config.WORKSPACE} && git tag round-{round_num}-end")
-
-# On PIVOT, rollback
-if strategy == "PIVOT":
-    os.system(f"cd {config.WORKSPACE} && git reset --hard round-{round_num-1}-end")
-```
-
-### 4. Component Toggles (Harness Simplification)
+### 2. Component Toggles (Harness Simplification)
 
 Article: Every harness component encodes an assumption about what the model can't do. When a new model ships, strip away components that are no longer load-bearing.
 
@@ -465,7 +489,7 @@ ENABLE_PLANNER=true
 ENABLE_ANXIETY_DETECTION=true
 ```
 
-### 5. Evaluator Self-Calibration Loop
+### 3. Evaluator Self-Calibration Loop
 
 Article: The author spent multiple rounds reading evaluator logs, finding judgment gaps, and updating prompts.
 

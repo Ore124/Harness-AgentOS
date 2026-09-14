@@ -20,6 +20,7 @@ class HarnessRunAndCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, \
                 patch.dict(os.environ, {"HARNESS_FLAT_WORKSPACE": "1"}), \
                 patch.object(config, "WORKSPACE", root), \
+                patch.object(config, "HARNESS_RUNTIME", "legacy"), \
                 patch("orchestrator.state.save_state"), \
                 patch("orchestrator.scheduler.Scheduler") as scheduler_cls:
             scheduler_cls.return_value.run_until_idle.return_value = final_state

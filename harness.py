@@ -122,6 +122,20 @@ class Harness:
         compatible, while CLI and embedding callers can now distinguish a
         completed run from a state-machine failure.
         """
+        from orchestrator.cutover import select_runtime
+
+        runtime = select_runtime(
+            "default",
+            user_prompt,
+            default_runtime=config.HARNESS_RUNTIME,
+            durable_projects=config.DURABLE_PROJECTS,
+            rollout_percent=config.DURABLE_ROLLOUT_PERCENT,
+        )
+        if runtime == "durable":
+            from durable_cli import run_task
+
+            return run_task(user_prompt, self.profile.name())
+
         from orchestrator.scheduler import Scheduler
         from orchestrator.state import create_run_state, save_state, state_path_for_workspace
 
@@ -359,6 +373,42 @@ def main():
 
     # Parse flags
     args = [a for a in sys.argv[1:] if a not in ("--verbose", "-v")]
+
+    if "--worker" in args:
+        worker_id = None
+        if "--worker-id" in args:
+            idx = args.index("--worker-id")
+            if idx + 1 >= len(args):
+                print("Error: --worker-id requires a value")
+                sys.exit(1)
+            worker_id = args[idx + 1]
+        from durable_cli import worker_main
+
+        worker_main(worker_id)
+        return
+
+    if "--migrate-state" in args:
+        idx = args.index("--migrate-state")
+        if idx + 1 >= len(args):
+            print("Error: --migrate-state requires a harness_state.json path")
+            sys.exit(1)
+        from durable_cli import migrate_state_main
+
+        state = migrate_state_main(args[idx + 1])
+        print(f"Imported durable run: {state['run_id']} status={state['status']}")
+        return
+
+    if "--set-membership" in args:
+        idx = args.index("--set-membership")
+        values = args[idx + 1:idx + 4]
+        if len(values) != 3:
+            print("Error: --set-membership requires PROJECT SUBJECT ROLE")
+            sys.exit(1)
+        from durable_cli import set_membership_main
+
+        set_membership_main(*values)
+        print(f"Membership updated: project={values[0]} subject={values[1]} role={values[2]}")
+        return
 
     # --ui [--port <port>]
     if "--ui" in args:

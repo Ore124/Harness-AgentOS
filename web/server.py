@@ -24,6 +24,9 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="Harness AgentOS Console")
+from web.api_v1 import router as durable_api_router
+
+app.include_router(durable_api_router)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 _workers: dict[str, threading.Thread] = {}
@@ -360,5 +363,7 @@ def _tail_traces(workspace: Path, max_lines: int = 120) -> list[dict[str, Any]]:
 
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     import uvicorn
+    from orchestrator.observability import configure
 
+    configure(f"{config.OTEL_SERVICE_NAME}-api", config.OTEL_EXPORTER_OTLP_ENDPOINT)
     uvicorn.run("web.server:app", host=host, port=port, reload=False)

@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import tools
 from agents import (
@@ -25,6 +26,65 @@ class AgentRunResultTests(unittest.TestCase):
         result = AgentRunResult("done", "no_tool_calls", 2)
 
         self.assertTrue(result.succeeded)
+
+    def test_length_response_without_tool_calls_is_retried(self):
+        truncated = SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="length",
+                message=SimpleNamespace(content="partial implementation", tool_calls=None),
+            )],
+            usage=None,
+        )
+        finished = SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content="done", tool_calls=None),
+            )],
+            usage=None,
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=Mock(side_effect=[truncated, finished]),
+                ),
+            ),
+        )
+
+        with patch("agents.get_client", return_value=client):
+            result = Agent("builder", "system").run("task")
+
+        self.assertEqual(result, AgentRunResult("done", "no_tool_calls", 2))
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        retry_messages = client.chat.completions.create.call_args.kwargs["messages"]
+        self.assertTrue(any(
+            "minimal index.html skeleton under 60 lines" in message.get("content", "")
+            for message in retry_messages
+        ))
+
+    def test_repeated_unparsed_length_responses_fail_the_attempt(self):
+        def truncated():
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(content="", tool_calls=None),
+                )],
+                usage=None,
+            )
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=Mock(side_effect=[truncated(), truncated(), truncated()]),
+                ),
+            ),
+        )
+
+        with patch("agents.get_client", return_value=client):
+            result = Agent("builder", "system").run("task")
+
+        self.assertEqual(result.exit_reason, "length_truncated")
+        self.assertEqual(result.iterations, 3)
+        self.assertFalse(result.succeeded)
 
     def test_evaluator_finalization_filters_expensive_tools(self):
         agent = Agent(

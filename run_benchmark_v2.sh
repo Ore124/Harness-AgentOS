@@ -16,6 +16,19 @@
 
 set -e
 
+# Harbor's Rich progress renderer emits Unicode characters. Force UTF-8 on
+# Windows so background Git Bash runs do not fail under the system GBK codepage.
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
+# Harbor may change its working directory to the job directory. Keep the
+# project root importable so benchmarks.harbor_agent can be loaded on Windows.
+if command -v cygpath >/dev/null 2>&1; then
+  export PYTHONPATH="$(cygpath -w "$PWD")${PYTHONPATH:+;${PYTHONPATH}}"
+else
+  export PYTHONPATH="$PWD${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
 # Load env vars
 export $(grep -v '^#' .env | grep -v '^\s*$' | xargs)
 
@@ -31,4 +44,4 @@ harbor run \
   -d "terminal-bench@2.0" \
   --agent-import-path benchmarks.harbor_agent:HarnessAgent \
   -k 5 \
-  --n-concurrent 1
+  --n-concurrent 4
