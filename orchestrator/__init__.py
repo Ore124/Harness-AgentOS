@@ -1,4 +1,4 @@
-"""State-driven orchestration layer for Harness AgentOS."""
+"""State-driven orchestration layer for Harness Runtime."""
 
 from orchestrator.state import STATE_FILE, create_run_state, load_state, save_state
 from orchestrator.scheduler import Scheduler

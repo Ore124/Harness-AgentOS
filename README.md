@@ -1,6 +1,6 @@
-# Harness AgentOS
+# Harness Runtime
 
-Harness AgentOS 是一个用纯 Python 实现的多 Agent 自主执行框架。它把一个自然语言任务拆成可持续运行的工程流程：路由任务类型、规划、构建、验证、记录状态，并在必要时继续下一轮迭代。
+Harness Runtime 是一个用纯 Python 实现的多 Agent 自主执行框架。它把一个自然语言任务拆成可持续运行的工程流程：路由任务类型、规划、构建、验证、记录状态，并在必要时继续下一轮迭代。
 
 ## Durable Runtime v2
 
@@ -61,7 +61,7 @@ python harness.py --set-membership PROJECT SUBJECT owner
 - 运行过程不可恢复，一旦中断就只能重来。
 - Agent 是否真的做完，缺少可执行验证和结构化记录。
 
-Harness AgentOS 用几个简单但可组合的模块解决这些问题：
+Harness Runtime 用几个简单但可组合的模块解决这些问题：
 
 - `Agent` 负责核心 while loop：调用模型、执行工具、把结果放回上下文。
 - `Profile` 负责场景差异：Web 应用、终端任务、代码修复、推理问答。
@@ -72,7 +72,7 @@ Harness AgentOS 用几个简单但可组合的模块解决这些问题：
 
 ## 项目边界
 
-Harness AgentOS 关注的是 Agent 运行架构，而不是替代完整的研发平台。它适合研究和实践“如何让模型更稳定地执行长任务”，也适合在受控环境里跑 Web 生成、终端任务、代码修复和推理类工作流。
+Harness Runtime 关注的是 Agent 运行架构，而不是替代完整的研发平台。它适合研究和实践“如何让模型更稳定地执行长任务”，也适合在受控环境里跑 Web 生成、终端任务、代码修复和推理类工作流。
 
 | 范围 | 说明 |
 | --- | --- |
@@ -393,7 +393,7 @@ description: One-line description used by the agent to decide when to load it.
 
 ## Evidence-Guided Recovery
 
-当 Builder、Evaluator 或验证阶段失败时，Harness AgentOS 默认启用 Evidence-Guided Recovery。它不会新增 Agent，也不会增加额外 LLM 调用，而是从已有 `feedback.md`、trace、异常信息和 git diff 中程序化提取结构化失败证据，并在下一轮重试时给 Builder 提供更聚焦的修复上下文。
+当 Builder、Evaluator 或验证阶段失败时，Harness Runtime 默认启用 Evidence-Guided Recovery。它不会新增 Agent，也不会增加额外 LLM 调用，而是从已有 `feedback.md`、trace、异常信息和 git diff 中程序化提取结构化失败证据，并在下一轮重试时给 Builder 提供更聚焦的修复上下文。
 
 结构化证据包含 `failure_type`、稳定的 `failure_signature`、失败检查项、关键错误片段、疑似相关文件、最近变更文件、`retry_goal`、`same_failure_count` 和 `recovery_strategy`。同一失败第一次使用 `targeted_fix`，第二次升级为 `reinspect_assumptions`，第三次及以上升级为 `escalate_analysis`，避免反复执行同一种无效修复路径。
 

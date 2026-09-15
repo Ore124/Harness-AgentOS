@@ -425,7 +425,7 @@ def main():
                 print("Error: --port requires an integer")
                 sys.exit(1)
         from web.server import run_server
-        log.info(f"Starting Harness AgentOS Console at http://127.0.0.1:{port}")
+        log.info(f"Starting Harness Runtime Console at http://127.0.0.1:{port}")
         run_server(port=port)
         return
 

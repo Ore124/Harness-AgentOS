@@ -1,4 +1,4 @@
-# Harness AgentOS — Recoverable Multi-Agent Harness for Long-Running Tasks
+# Harness Runtime — Recoverable Multi-Agent Harness for Long-Running Tasks
 
 English | [中文](README.md)
 
@@ -8,7 +8,7 @@ English | [中文](README.md)
 
 ## Durable Runtime v2
 
-Harness AgentOS includes an opt-in durable runtime for work that must survive process restarts, execution failures, and plan changes. Existing CLI commands, Profiles, Skills, tool schemas, Harbor integration, and legacy Web APIs remain available. Set `HARNESS_RUNTIME=durable` to route new runs through the event-driven DAG runtime:
+Harness Runtime includes an opt-in durable runtime for work that must survive process restarts, execution failures, and plan changes. Existing CLI commands, Profiles, Skills, tool schemas, Harbor integration, and legacy Web APIs remain available. Set `HARNESS_RUNTIME=durable` to route new runs through the event-driven DAG runtime:
 
 ```text
 Observe -> Plan/Replan -> Schedule -> Execute -> Verify

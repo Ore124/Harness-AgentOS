@@ -102,7 +102,7 @@ DURABLE_EXECUTION_CAPABILITY = os.environ.get(
 )
 WORKER_EXECUTOR = os.environ.get("HARNESS_WORKER_EXECUTOR", "local").strip().lower()
 AGENT_SANDBOX_IMAGE = os.environ.get(
-    "HARNESS_AGENT_SANDBOX_IMAGE", "harness-agentos:latest"
+    "HARNESS_AGENT_SANDBOX_IMAGE", "harness-runtime:latest"
 )
 AGENT_EGRESS_NETWORK = os.environ.get("HARNESS_AGENT_EGRESS_NETWORK", "") or None
 AGENT_EGRESS_PROXY = os.environ.get("HARNESS_AGENT_EGRESS_PROXY", "") or None
@@ -147,5 +147,5 @@ S3_ENDPOINT_URL = os.environ.get("HARNESS_S3_ENDPOINT_URL", "") or None
 S3_PUBLIC_ENDPOINT_URL = os.environ.get("HARNESS_S3_PUBLIC_ENDPOINT_URL", "") or None
 
 # --- Observability ---
-OTEL_SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "harness-agentos")
+OTEL_SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "harness-runtime")
 OTEL_EXPORTER_OTLP_ENDPOINT = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")

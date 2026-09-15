@@ -23,7 +23,7 @@ from orchestrator.state import _store_for_workspace, STATE_FILE, create_run_stat
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="Harness AgentOS Console")
+app = FastAPI(title="Harness Runtime Console")
 from web.api_v1 import router as durable_api_router
 
 app.include_router(durable_api_router)
